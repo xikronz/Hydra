@@ -17,12 +17,12 @@ Output: a JSON file with per-shape mean accept length, grouped by
 
 Usage:
     python pareto_experiment.py \
-        --hydra-checkpoint zankner/Hydra-Vicuna-7B \
+        --hydra-checkpoint ankner/hydra-vicuna-7b-v1.3 \
         --base-model       lmsys/vicuna-7b-v1.3 \
-        --sharegpt-path    /path/to/sharegpt/train.json \
+        --sharegpt-path    data/sharegpt/raw/train.json \
         --calibration-prompts 200 \
         --max-new-tokens   256 \
-        --out-json         pareto_results.json
+        --out-json         logs/pareto_results.json
 """
 from __future__ import annotations
 
@@ -37,7 +37,8 @@ from typing import Dict, List, Tuple
 
 import torch
 
-HYDRA_REPO = os.environ.get("HYDRA_REPO", "/home/claude/Hydra")
+DEFAULT_HYDRA_REPO = str(Path(__file__).resolve().parents[1])
+HYDRA_REPO = os.environ.get("HYDRA_REPO", DEFAULT_HYDRA_REPO)
 if HYDRA_REPO not in sys.path:
     sys.path.insert(0, HYDRA_REPO)
 
@@ -52,7 +53,51 @@ from hydra.model.utils import (  # noqa: E402
     evaluate_posterior,
 )
 
-from load_prompts import load_all
+
+def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
+    """Load ShareGPT prompts from a JSONL file (one JSON object per line).
+
+    Each conversation has a `conversations` list of {from, value} dicts. We
+    build a prompt text out of the human turns up to (but not including) the
+    first gpt response, ending with `ASSISTANT:` so the model continues from
+    there. This matches the format used in `hydra/log_heads.py`.
+    """
+    import random
+
+    convs: List[Dict] = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            convs.append(json.loads(line))
+
+    rng = random.Random(seed)
+    rng.shuffle(convs)
+
+    out: List[Dict] = []
+    for sample in convs:
+        turns = sample.get("conversations", [])
+        if not turns:
+            continue
+        parts: List[str] = []
+        for t in turns:
+            role = t.get("from")
+            content = t.get("value", "")
+            if role == "human":
+                parts.append(f"USER: {content}")
+            elif role == "gpt":
+                break
+        if not parts:
+            continue
+        prompt_text = "\n".join(parts) + "\nASSISTANT:"
+        out.append({
+            "id": sample.get("id", ""),
+            "prompt_text": prompt_text,
+        })
+        if len(out) >= n:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -235,15 +280,12 @@ def main(args):
         model.base_model, model.hydra_head_arch
     )
 
-    # Prompt corpus
-    prompts = list(load_all(
-        sharegpt_path=args.sharegpt_path,
-        humaneval_limit=args.humaneval_limit,
-        gsm8k_n=args.gsm8k_n,
-        sharegpt_n=args.sharegpt_n,
+    prompts = load_sharegpt_prompts(
+        path=args.sharegpt_path,
+        n=args.calibration_prompts,
         seed=args.seed,
-    ))[:args.calibration_prompts]
-    print(f"Calibration prompts: {len(prompts)}")
+    )
+    print(f"Calibration prompts (ShareGPT): {len(prompts)}")
 
     t0 = time.time()
     for p_idx, prompt in enumerate(prompts):
@@ -373,16 +415,13 @@ def main(args):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--hydra-checkpoint", default="zankner/Hydra-Vicuna-7B")
+    p.add_argument("--hydra-checkpoint", default="ankner/hydra-vicuna-7b-v1.3")
     p.add_argument("--base-model", default="lmsys/vicuna-7b-v1.3")
     p.add_argument("--sharegpt-path", required=True)
     p.add_argument("--out-json", default="pareto_results.json")
     p.add_argument("--calibration-prompts", type=int, default=200)
     p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--max-input-tokens", type=int, default=1500)
-    p.add_argument("--humaneval-limit", type=int, default=None)
-    p.add_argument("--gsm8k-n", type=int, default=200)
-    p.add_argument("--sharegpt-n", type=int, default=400)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--posterior-threshold", type=float, default=0.09)
