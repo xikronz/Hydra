@@ -1,0 +1,27 @@
+Tue Apr 28 02:05:27 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.124.06             Driver Version: 570.124.06     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA RTX A6000               On  |   00000000:C1:00.0 Off |                    0 |
+| 30%   44C    P8             34W /  300W |       2MiB /  46068MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+CUDA_VISIBLE_DEVICES=0
+[info] Loading data from data/sharegpt/raw/val.json
+[info] Loaded 3432 conversations
+[info] Analyzing sample 0 with 6 turns
+[info] First turn preview: Give me 100 prompt parameters that I can specify that will influence your output, e.g. voice, tone, register, style, audience etc....
+
+[info] Loading Hydra model: both

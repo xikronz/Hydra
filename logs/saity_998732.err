@@ -1,0 +1,155 @@
++ source /share/apps/software/anaconda3/etc/profile.d/conda.sh
+++ export CONDA_EXE=/share/apps/software/anaconda3/bin/conda
+++ CONDA_EXE=/share/apps/software/anaconda3/bin/conda
+++ export _CE_M=
+++ _CE_M=
+++ export _CE_CONDA=
+++ _CE_CONDA=
+++ export CONDA_PYTHON_EXE=/share/apps/software/anaconda3/bin/python
+++ CONDA_PYTHON_EXE=/share/apps/software/anaconda3/bin/python
+++ '[' -z x ']'
++ conda activate /home/cc2864/.conda/envs/outputs
++ local cmd=activate
++ case "$cmd" in
++ __conda_activate activate /home/cc2864/.conda/envs/outputs
++ '[' -n '' ']'
++ local ask_conda
+++ PS1=
+++ __conda_exe shell.posix activate /home/cc2864/.conda/envs/outputs
+++ /share/apps/software/anaconda3/bin/conda shell.posix activate /home/cc2864/.conda/envs/outputs
++ ask_conda='. "/share/apps/software/anaconda3/etc/conda/deactivate.d/libglib_deactivate.sh"
+PS1='\''(outputs) '\''
+export PATH='\''/home/cc2864/.local/bin:/home/cc2864/.conda/envs/outputs/bin:/share/apps/software/anaconda3/condabin:/home/cc2864/.cursor-server/bin/linux-x64/379934e04d2b3290cf7aefa14560f942e4212920/bin/remote-cli:/home/cc2864/.cursor-server/bin/linux-x64/379934e04d2b3290cf7aefa14560f942e4212920/bin/remote-cli:/home/cc2864/.local/bin:/usr/local/slurm/current/bin:/usr/local/slurm/current/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin'\''
+export CONDA_PREFIX='\''/home/cc2864/.conda/envs/outputs'\''
+export CONDA_SHLVL='\''2'\''
+export CONDA_DEFAULT_ENV='\''outputs'\''
+export CONDA_PROMPT_MODIFIER='\''(outputs) '\''
+export CONDA_PREFIX_1='\''/share/apps/software/anaconda3'\''
+export CONDA_EXE='\''/share/apps/software/anaconda3/bin/conda'\''
+export _CE_M='\'''\''
+export _CE_CONDA='\'''\''
+export CONDA_PYTHON_EXE='\''/share/apps/software/anaconda3/bin/python'\'''
++ eval '. "/share/apps/software/anaconda3/etc/conda/deactivate.d/libglib_deactivate.sh"
+PS1='\''(outputs) '\''
+export PATH='\''/home/cc2864/.local/bin:/home/cc2864/.conda/envs/outputs/bin:/share/apps/software/anaconda3/condabin:/home/cc2864/.cursor-server/bin/linux-x64/379934e04d2b3290cf7aefa14560f942e4212920/bin/remote-cli:/home/cc2864/.cursor-server/bin/linux-x64/379934e04d2b3290cf7aefa14560f942e4212920/bin/remote-cli:/home/cc2864/.local/bin:/usr/local/slurm/current/bin:/usr/local/slurm/current/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin'\''
+export CONDA_PREFIX='\''/home/cc2864/.conda/envs/outputs'\''
+export CONDA_SHLVL='\''2'\''
+export CONDA_DEFAULT_ENV='\''outputs'\''
+export CONDA_PROMPT_MODIFIER='\''(outputs) '\''
+export CONDA_PREFIX_1='\''/share/apps/software/anaconda3'\''
+export CONDA_EXE='\''/share/apps/software/anaconda3/bin/conda'\''
+export _CE_M='\'''\''
+export _CE_CONDA='\'''\''
+export CONDA_PYTHON_EXE='\''/share/apps/software/anaconda3/bin/python'\'''
+++ . /share/apps/software/anaconda3/etc/conda/deactivate.d/libglib_deactivate.sh
++++ export GSETTINGS_SCHEMA_DIR=
++++ GSETTINGS_SCHEMA_DIR=
++++ unset GSETTINGS_SCHEMA_DIR_CONDA_BACKUP
++++ '[' -z ']'
++++ unset GSETTINGS_SCHEMA_DIR
+++ PS1='(outputs) '
+++ export PATH=/home/cc2864/.local/bin:/home/cc2864/.conda/envs/outputs/bin:/share/apps/software/anaconda3/condabin:/home/cc2864/.cursor-server/bin/linux-x64/379934e04d2b3290cf7aefa14560f942e4212920/bin/remote-cli:/home/cc2864/.cursor-server/bin/linux-x64/379934e04d2b3290cf7aefa14560f942e4212920/bin/remote-cli:/home/cc2864/.local/bin:/usr/local/slurm/current/bin:/usr/local/slurm/current/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+++ PATH=/home/cc2864/.local/bin:/home/cc2864/.conda/envs/outputs/bin:/share/apps/software/anaconda3/condabin:/home/cc2864/.cursor-server/bin/linux-x64/379934e04d2b3290cf7aefa14560f942e4212920/bin/remote-cli:/home/cc2864/.cursor-server/bin/linux-x64/379934e04d2b3290cf7aefa14560f942e4212920/bin/remote-cli:/home/cc2864/.local/bin:/usr/local/slurm/current/bin:/usr/local/slurm/current/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+++ export CONDA_PREFIX=/home/cc2864/.conda/envs/outputs
+++ CONDA_PREFIX=/home/cc2864/.conda/envs/outputs
+++ export CONDA_SHLVL=2
+++ CONDA_SHLVL=2
+++ export CONDA_DEFAULT_ENV=outputs
+++ CONDA_DEFAULT_ENV=outputs
+++ export 'CONDA_PROMPT_MODIFIER=(outputs) '
+++ CONDA_PROMPT_MODIFIER='(outputs) '
+++ export CONDA_PREFIX_1=/share/apps/software/anaconda3
+++ CONDA_PREFIX_1=/share/apps/software/anaconda3
+++ export CONDA_EXE=/share/apps/software/anaconda3/bin/conda
+++ CONDA_EXE=/share/apps/software/anaconda3/bin/conda
+++ export _CE_M=
+++ _CE_M=
+++ export _CE_CONDA=
+++ _CE_CONDA=
+++ export CONDA_PYTHON_EXE=/share/apps/software/anaconda3/bin/python
+++ CONDA_PYTHON_EXE=/share/apps/software/anaconda3/bin/python
++ __conda_hashr
++ '[' -n '' ']'
++ '[' -n '' ']'
++ hash -r
++ cd /share/cuvl/cc2864/interpretable/Hydra
++ python -m hydra.log_heads --model ankner/hydra-vicuna-7b-v1.3 --data data/sharegpt/raw/val.json --sample_idx 0 --output logs/hydra_head_analysis.csv --mode both
+/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/transformers/utils/generic.py:441: FutureWarning: `torch.utils._pytree._register_pytree_node` is deprecated. Please use `torch.utils._pytree.register_pytree_node` instead.
+  _torch_pytree._register_pytree_node(
+/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/transformers/utils/generic.py:309: FutureWarning: `torch.utils._pytree._register_pytree_node` is deprecated. Please use `torch.utils._pytree.register_pytree_node` instead.
+  _torch_pytree._register_pytree_node(
+/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/transformers/utils/generic.py:309: FutureWarning: `torch.utils._pytree._register_pytree_node` is deprecated. Please use `torch.utils._pytree.register_pytree_node` instead.
+  _torch_pytree._register_pytree_node(
+/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/file_download.py:949: FutureWarning: `resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/utils/_http.py", line 403, in hf_raise_for_status
+    response.raise_for_status()
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://huggingface.co/both/resolve/main/config.json
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/transformers/utils/hub.py", line 389, in cached_file
+    resolved_file = hf_hub_download(
+                    ^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/file_download.py", line 1014, in hf_hub_download
+    return _hf_hub_download_to_cache_dir(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/file_download.py", line 1121, in _hf_hub_download_to_cache_dir
+    _raise_on_head_call_error(head_call_error, force_download, local_files_only)
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/file_download.py", line 1662, in _raise_on_head_call_error
+    raise head_call_error
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/file_download.py", line 1550, in _get_metadata_or_catch_error
+    metadata = get_hf_file_metadata(
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/file_download.py", line 1467, in get_hf_file_metadata
+    r = _request_wrapper(
+        ^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/file_download.py", line 283, in _request_wrapper
+    response = _request_wrapper(
+               ^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/file_download.py", line 307, in _request_wrapper
+    hf_raise_for_status(response)
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/huggingface_hub/utils/_http.py", line 453, in hf_raise_for_status
+    raise _format(RepositoryNotFoundError, message, response) from e
+huggingface_hub.errors.RepositoryNotFoundError: 404 Client Error. (Request ID: Root=1-69f04e34-19bb3a71652474a85ce801a6;592fb7be-edbb-4f1f-ab57-7465bd45ed9c)
+
+Repository Not Found for url: https://huggingface.co/both/resolve/main/config.json.
+Please make sure you specified the correct `repo_id` and `repo_type`.
+If you are trying to access a private or gated repo, make sure you are authenticated. For more details, see https://huggingface.co/docs/huggingface_hub/authentication
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/share/cuvl/cc2864/interpretable/Hydra/hydra/log_heads.py", line 371, in <module>
+    main()
+  File "/share/cuvl/cc2864/interpretable/Hydra/hydra/log_heads.py", line 331, in main
+    model = HydraModel.from_pretrained(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/share/cuvl/cc2864/interpretable/Hydra/hydra/model/hydra_model.py", line 160, in from_pretrained
+    hydra_config = HydraConfig.from_pretrained(hydra_head_name_or_path)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/transformers/configuration_utils.py", line 615, in from_pretrained
+    config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/transformers/configuration_utils.py", line 644, in get_config_dict
+    config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/transformers/configuration_utils.py", line 699, in _get_config_dict
+    resolved_config_file = cached_file(
+                           ^^^^^^^^^^^^
+  File "/home/cc2864/.conda/envs/outputs/lib/python3.12/site-packages/transformers/utils/hub.py", line 410, in cached_file
+    raise EnvironmentError(
+OSError: both is not a local folder and is not a valid model identifier listed on 'https://huggingface.co/models'
+If this is a private repository, make sure to pass a token having permission to this repo either by logging in with `huggingface-cli login` or by passing `token=<your_token>`

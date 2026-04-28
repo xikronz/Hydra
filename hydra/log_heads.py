@@ -281,6 +281,15 @@ def main():
         help="Output CSV path for per-step records",
     )
     parser.add_argument(
+        "--mode",
+        choices=["generation", "both", "teacher_forced"],
+        default="generation",
+        help=(
+            "Compatibility flag. This script always runs real inference "
+            "(speculative decoding), so all modes map to generation."
+        ),
+    )
+    parser.add_argument(
         "--temperature",
         type=float,
         default=0.0,
@@ -300,6 +309,12 @@ def main():
     )
     parser.add_argument("--bf16", action="store_true", default=True)
     args = parser.parse_args()
+
+    if args.mode != "generation":
+        print(
+            f"[warn] --mode {args.mode!r} requested, but this script only runs "
+            "actual inference mode. Proceeding with generation analysis."
+        )
 
     os.chdir(ROOT)
 
