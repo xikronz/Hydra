@@ -264,6 +264,10 @@ def main(args):
     super_buffers = generate_hydra_buffers(super_paths, device=model.base_model.device)
     print(f"Superset {SUPERSET_CAPS}: {len(super_paths)} non-root nodes")
 
+    max_position_embeddings = model.config.max_position_embeddings
+    tree_size = len(super_paths) + 1
+    print(f"Max position embeddings: {max_position_embeddings}, tree size per step: {tree_size}")
+
     candidates_metadata = gather_candidates()
     print(f"Candidate shapes to score: {len(candidates_metadata)}")
     by_cell: Dict[Tuple[int, int], List[int]] = {}
@@ -288,10 +292,15 @@ def main(args):
     print(f"Calibration prompts (ShareGPT): {len(prompts)}")
 
     t0 = time.time()
+    n_skipped = 0
     for p_idx, prompt in enumerate(prompts):
         text = prompt["prompt_text"]
         input_ids = tok(text, return_tensors="pt").input_ids.to(model.base_model.device)
         if input_ids.shape[1] > args.max_input_tokens:
+            n_skipped += 1
+            continue
+        if input_ids.shape[1] + tree_size > max_position_embeddings:
+            n_skipped += 1
             continue
 
         current_length_data.zero_()
@@ -305,6 +314,9 @@ def main(args):
 
         new_token = 0
         for step in range(args.max_new_tokens):
+            if input_ids.shape[1] + tree_size > max_position_embeddings:
+                break
+
             to_pass = input_ids if step == 0 else None
             cands_tensor, tree_cands = model.hydra_head.proposal(
                 base_logits, hidden_states, super_buffers, past_kv, to_pass
@@ -362,7 +374,11 @@ def main(args):
         if (p_idx + 1) % 10 == 0:
             elapsed = time.time() - t0
             print(f"[{p_idx+1}/{len(prompts)}] {n_steps} steps  "
-                  f"({n_steps / max(elapsed, 1e-9):.1f} steps/s)")
+                  f"({n_steps / max(elapsed, 1e-9):.1f} steps/s, "
+                  f"{n_skipped} skipped for context limit)")
+
+    print(f"Done: {n_steps} total steps across {len(prompts)-n_skipped}/{len(prompts)} prompts "
+          f"({n_skipped} skipped for exceeding context limit)")
 
     # ----------------------------------------------------------------
     # Compile per-cell results & Pareto picks

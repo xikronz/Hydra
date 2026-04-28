@@ -28,7 +28,7 @@ python scripts/pareto_experiment.py \
   --hydra-checkpoint ankner/hydra-vicuna-7b-v1.3 \
   --base-model       lmsys/vicuna-7b-v1.3 \
   --sharegpt-path    data/sharegpt/raw/train.json \
-  --calibration-prompts 200 \
+  --calibration-prompts 300 \
   --max-new-tokens      256 \
   --max-input-tokens    1500 \
   --seed                42 \
