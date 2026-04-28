@@ -101,6 +101,9 @@ def run_hydra_generation_with_logging(
     input_len = input_ids.shape[1]
     num_heads = model.hydra
     
+    max_position_embeddings = model.config.max_position_embeddings
+    tree_size = len(hydra_choices) + 1
+    
     reset_hydra_mode(model)
     hidden_states, logits = initialize_hydra(
         input_ids, model, hydra_buffers["hydra_attn_mask"], past_key_values, hydra_buffers["proposal_cross_attn_masks"]
@@ -112,6 +115,11 @@ def run_hydra_generation_with_logging(
     total_generated = 0
     
     for idx in range(max_new_tokens):
+        current_len = input_ids.shape[1]
+        if current_len + tree_size > max_position_embeddings:
+            print(f"[info] Stopping: would exceed max_position_embeddings ({current_len} + {tree_size} > {max_position_embeddings})")
+            break
+        
         to_pass_input_ids = input_ids if idx == 0 else None
         
         candidates, tree_candidates = model.hydra_head.proposal(
@@ -273,7 +281,7 @@ def main():
         "--max_new_tokens",
         type=int,
         default=512,
-        help="Maximum tokens to generate",
+        help="Maximum tokens to generate (will stop early if approaching context limit)",
     )
     parser.add_argument(
         "--output",
