@@ -67,6 +67,7 @@ class HydraPrefixMLP(nn.Module):
         
         prefix_config = deepcopy(base_config)
         prefix_config.num_hidden_layers = 1
+        prefix_config._attn_implementation = "eager"
         self.prefix_embeding_layer = LlamaModel(prefix_config)
         self.hydra_num_layers = hydra_num_layers
         self.hydra_num_heads = hydra_num_heads

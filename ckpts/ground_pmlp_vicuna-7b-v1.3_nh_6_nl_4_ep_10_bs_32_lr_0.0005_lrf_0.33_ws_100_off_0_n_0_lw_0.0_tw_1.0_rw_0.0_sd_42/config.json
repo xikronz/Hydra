@@ -1,0 +1,9 @@
+{
+  "base_model_name_or_path": "lmsys/vicuna-7b-v1.3",
+  "grounded_heads": true,
+  "hidden_state_offset": 0,
+  "hydra_head_arch": "prefix-mlp",
+  "hydra_num_heads": 6,
+  "hydra_num_layers": 4,
+  "transformers_version": "4.36.2"
+}

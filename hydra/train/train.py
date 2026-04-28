@@ -970,6 +970,7 @@ def train():
     training_args.report_to = ["wandb"]
     if local_rank == 0:
         wandb.init(project="hydra-decoding", 
+            entity = "praxis-cornell",
             name=save_run_name,
             group=base_run_name,
             config={"train_args": training_args, "model_args": model_args, "data_args": data_args},
