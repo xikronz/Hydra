@@ -382,7 +382,21 @@ def main():
         print(f"\n[info] Per-step records written to: {args.output}")
     
     summary_path = args.output.replace(".csv", "_summary.json")
-    summary_to_save = {k: v for k, v in summary.items() if k != "generated_text"}
+    
+    def to_serializable(obj):
+        if isinstance(obj, torch.Tensor):
+            return obj.item() if obj.numel() == 1 else obj.tolist()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.floating)):
+            return obj.item()
+        elif isinstance(obj, dict):
+            return {k: to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [to_serializable(x) for x in obj]
+        return obj
+    
+    summary_to_save = {k: to_serializable(v) for k, v in summary.items() if k != "generated_text"}
     summary_to_save["generated_text_length"] = len(summary["generated_text"])
     os.makedirs(os.path.dirname(summary_path) or ".", exist_ok=True)
     with open(summary_path, "w") as f:
