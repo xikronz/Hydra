@@ -1,0 +1,20 @@
+{
+  "num_steps": 253,
+  "total_tokens": 973,
+  "mean_accept_length": 2.8458498023715415,
+  "mean_tokens_per_step": 3.8458499908447266,
+  "accept_length_distribution": {
+    "0": 22,
+    "1": 18,
+    "2": 36,
+    "3": 78,
+    "4": 99
+  },
+  "head_acceptance_counts": {
+    "0": 231,
+    "1": 213,
+    "2": 177,
+    "3": 99
+  },
+  "generated_text_length": 2608
+}

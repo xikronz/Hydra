@@ -15,14 +15,9 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 
 set -x
 
-source /share/apps/software/anaconda3/etc/profile.d/conda.sh
-conda activate /home/cc2864/.conda/envs/outputs
-
-cd /share/cuvl/cc2864/interpretable/Hydra || exit 1
-
 mkdir -p logs
 
-export HYDRA_REPO=/share/cuvl/cc2864/interpretable/Hydra
+export HYDRA_REPO=/home/ubuntu/Hydra
 
 python scripts/pareto_experiment.py \
   --hydra-checkpoint ankner/hydra-vicuna-7b-v1.3 \
@@ -35,4 +30,4 @@ python scripts/pareto_experiment.py \
   --temperature         0.7 \
   --posterior-threshold 0.09 \
   --posterior-alpha     0.3 \
-  --out-json            logs/pareto_results_${SLURM_JOB_ID}.json
+  --out-json            logs/pareto_results.json

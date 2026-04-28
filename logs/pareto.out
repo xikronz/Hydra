@@ -1,0 +1,96 @@
+ubuntu@thunder-client:~/Hydra$ bash pareto.sub
+Tue Apr 28 14:53:05 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.16             Driver Version: 580.126.16     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA RTX A6000               On  |   00000000:0E:00.0 Off |                  Off |
+| 30%   30C    P8             33W /  300W |       3MiB /  49140MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+CUDA_VISIBLE_DEVICES=
++ mkdir -p logs
++ export HYDRA_REPO=/home/ubuntu/Hydra
++ HYDRA_REPO=/home/ubuntu/Hydra
++ python scripts/pareto_experiment.py --hydra-checkpoint ankner/hydra-vicuna-7b-v1.3 --base-model lmsys/vicuna-7b-v1.3 --sharegpt-path data/sharegpt/raw/train.json --calibration-prompts 300 --max-new-tokens 256 --max-input-tokens 1500 --seed 42 --temperature 0.7 --posterior-threshold 0.09 --posterior-alpha 0.3 --out-json logs/pareto_results.json
+/home/ubuntu/.local/lib/python3.12/site-packages/transformers/utils/generic.py:441: FutureWarning: `torch.utils._pytree._register_pytree_node` is deprecated. Please use `torch.utils._pytree.register_pytree_node` instead.
+  _torch_pytree._register_pytree_node(
+/home/ubuntu/.local/lib/python3.12/site-packages/transformers/utils/generic.py:309: FutureWarning: `torch.utils._pytree._register_pytree_node` is deprecated. Please use `torch.utils._pytree.register_pytree_node` instead.
+  _torch_pytree._register_pytree_node(
+/home/ubuntu/.local/lib/python3.12/site-packages/transformers/utils/generic.py:309: FutureWarning: `torch.utils._pytree._register_pytree_node` is deprecated. Please use `torch.utils._pytree.register_pytree_node` instead.
+  _torch_pytree._register_pytree_node(
+Loading Hydra: ankner/hydra-vicuna-7b-v1.3
+/home/ubuntu/.local/lib/python3.12/site-packages/huggingface_hub/file_download.py:949: FutureWarning: `resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.
+  warnings.warn(
+Overriding base_model as: lmsys/vicuna-7b-v1.3
+Loading checkpoint shards: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████| 2/2 [00:34<00:00, 17.20s/it]
+You are using the default legacy behaviour of the <class 'transformers.models.llama.tokenization_llama.LlamaTokenizer'>. This is expected, and simply means that the `legacy` (previous) behavior will be used so nothing changes for you. If you want to use the new behaviour, set `legacy=False`. This should only be set if you understand what it means, and thoroughly read the reason why this was added as explained in https://github.com/huggingface/transformers/pull/24565
+ ^?Initializing HydraLM head with pretrained weights...
+Hydra heads: K=4
+Superset (8, 4, 2, 2): 232 non-root nodes
+Max position embeddings: 2048, tree size per step: 233
+Candidate shapes to score: 106
+  spread across 16 (depth, budget) cells
+Calibration prompts (ShareGPT): 300
+[10/300] 661 steps  (1.7 steps/s, 0 skipped for context limit)
+[20/300] 1697 steps  (1.7 steps/s, 0 skipped for context limit)
+ ^?Token indices sequence length is longer than the specified maximum sequence length for this model (2805 > 2048). Running this sequence through the model will result in indexing errors
+[40/300] 3548 steps  (1.7 steps/s, 1 skipped for context limit)
+[50/300] 4384 steps  (1.7 steps/s, 2 skipped for context limit)
+[60/300] 5446 steps  (1.7 steps/s, 2 skipped for context limit)
+[70/300] 6572 steps  (1.7 steps/s, 2 skipped for context limit)
+[80/300] 7677 steps  (1.7 steps/s, 2 skipped for context limit)
+[90/300] 8798 steps  (1.7 steps/s, 2 skipped for context limit)
+[100/300] 10080 steps  (1.7 steps/s, 2 skipped for context limit)
+[110/300] 11155 steps  (1.7 steps/s, 2 skipped for context limit)
+[120/300] 12113 steps  (1.7 steps/s, 3 skipped for context limit)
+[130/300] 12909 steps  (1.7 steps/s, 4 skipped for context limit)
+[140/300] 14273 steps  (1.7 steps/s, 4 skipped for context limit)
+[150/300] 15128 steps  (1.7 steps/s, 5 skipped for context limit)
+[160/300] 15829 steps  (1.7 steps/s, 5 skipped for context limit)
+[170/300] 16489 steps  (1.7 steps/s, 6 skipped for context limit)
+[180/300] 17651 steps  (1.7 steps/s, 6 skipped for context limit)
+[190/300] 18899 steps  (1.7 steps/s, 7 skipped for context limit)
+[200/300] 19724 steps  (1.7 steps/s, 7 skipped for context limit)
+[210/300] 20578 steps  (1.7 steps/s, 7 skipped for context limit)
+[220/300] 21828 steps  (1.7 steps/s, 7 skipped for context limit)
+[230/300] 22686 steps  (1.7 steps/s, 7 skipped for context limit)
+[240/300] 24050 steps  (1.7 steps/s, 7 skipped for context limit)
+[260/300] 25819 steps  (1.7 steps/s, 9 skipped for context limit)
+[270/300] 26823 steps  (1.7 steps/s, 9 skipped for context limit)
+[280/300] 27783 steps  (1.7 steps/s, 9 skipped for context limit)
+[290/300] 28527 steps  (1.7 steps/s, 9 skipped for context limit)
+[300/300] 29878 steps  (1.7 steps/s, 9 skipped for context limit)
+Done: 29878 total steps across 291/300 prompts (9 skipped for exceeding context limit)
+
+Saved logs/pareto_results.json
+
+Per-cell Pareto winners:
+      cell     best widths  nodes  mean_accept
+     d1_B4             [5]      5        0.819
+     d1_B8             [8]      8        0.828
+    d2_B16          [4, 4]     20        1.469
+    d2_B32          [8, 4]     40        1.492
+     d2_B4          [2, 1]      4        0.866
+     d2_B8          [3, 2]      9        1.438
+    d3_B16       [2, 2, 2]     14        1.536
+    d3_B32       [4, 3, 2]     40        1.577
+     d3_B4       [1, 1, 1]      3        0.858
+    d3_B63       [6, 4, 2]     78        1.609
+     d3_B8       [2, 2, 1]     10        1.479
+    d4_B16    [2, 2, 1, 1]     14        1.483
+    d4_B32    [3, 2, 2, 1]     33        1.554
+     d4_B4    [1, 1, 1, 1]      4        0.858
+    d4_B63    [5, 3, 2, 1]     80        1.595
+     d4_B8    [2, 1, 1, 1]      8        0.870
