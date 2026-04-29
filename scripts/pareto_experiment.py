@@ -104,9 +104,9 @@ def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
 # Tree enumeration / shape generation
 # ---------------------------------------------------------------------------
 
-SUPERSET_CAPS = (8, 4, 2, 2)   # max width per depth
-BUDGETS = [4, 8, 16, 32, 63]
-TOLERANCE = 0.30                 # +/- 30% of target budget
+SUPERSET_CAPS = (12, 4, 2, 1)   # default; overridden by --superset-caps
+BUDGETS = [4, 8, 16, 32, 63, 128]  # default; overridden by --budgets
+TOLERANCE = 0.30                 # default; overridden by --tolerance
 
 
 def enumerate_paths(widths: List[int]) -> List[List[int]]:
@@ -146,18 +146,26 @@ def fits_in_superset(widths: Tuple[int, ...], caps: Tuple[int, ...]) -> bool:
     return all(widths[k] <= caps[k] for k in range(len(widths)))
 
 
-def gather_candidates() -> List[Dict]:
+def gather_candidates(
+    superset_caps: Tuple[int, ...] = SUPERSET_CAPS,
+    budgets: List[int] = BUDGETS,
+    tolerance: float = TOLERANCE,
+    max_depth: int = None,
+    max_w: int = 16,
+) -> List[Dict]:
     """All non-increasing shapes within budget tolerances and inside the superset."""
+    if max_depth is None:
+        max_depth = len(superset_caps)
     out = []
-    for d in [1, 2, 3, 4]:
-        shapes = enumerate_non_increasing(d)
-        for B in BUDGETS:
-            lo = int(B * (1 - TOLERANCE))
-            hi = int(B * (1 + TOLERANCE))
+    for d in range(1, max_depth + 1):
+        shapes = enumerate_non_increasing(d, max_w=max_w)
+        for B in budgets:
+            lo = int(B * (1 - tolerance))
+            hi = int(B * (1 + tolerance))
             for s in shapes:
                 if not (lo <= node_count(s) <= hi):
                     continue
-                if not fits_in_superset(s, SUPERSET_CAPS):
+                if not fits_in_superset(s, superset_caps):
                     continue
                 out.append({
                     "depth": d,
@@ -259,16 +267,26 @@ def main(args):
     # ------------------------------------------------------------------
     # Superset and candidate shapes
     # ------------------------------------------------------------------
-    super_paths = enumerate_paths(list(SUPERSET_CAPS))
+    superset_caps = tuple(int(x) for x in args.superset_caps.split(","))
+    budgets = [int(x) for x in args.budgets.split(",")]
+    tolerance = float(args.tolerance)
+    print(f"Search space: superset_caps={superset_caps}, budgets={budgets}, tolerance={tolerance}")
+
+    super_paths = enumerate_paths(list(superset_caps))
     super_p2p = build_path_to_pos(super_paths)
     super_buffers = generate_hydra_buffers(super_paths, device=model.base_model.device)
-    print(f"Superset {SUPERSET_CAPS}: {len(super_paths)} non-root nodes")
+    print(f"Superset {superset_caps}: {len(super_paths)} non-root nodes")
 
     max_position_embeddings = model.config.max_position_embeddings
     tree_size = len(super_paths) + 1
     print(f"Max position embeddings: {max_position_embeddings}, tree size per step: {tree_size}")
+    if tree_size + args.max_input_tokens > max_position_embeddings:
+        print(f"[warn] tree_size ({tree_size}) + max_input_tokens ({args.max_input_tokens}) "
+              f"> max_position_embeddings ({max_position_embeddings}) -- many prompts will be skipped")
 
-    candidates_metadata = gather_candidates()
+    candidates_metadata = gather_candidates(
+        superset_caps=superset_caps, budgets=budgets, tolerance=tolerance,
+    )
     print(f"Candidate shapes to score: {len(candidates_metadata)}")
     by_cell: Dict[Tuple[int, int], List[int]] = {}
     for i, m in enumerate(candidates_metadata):
@@ -405,8 +423,11 @@ def main(args):
         cell_winners[key] = rs_sorted[0]
 
     out = {
-        "superset_caps": list(SUPERSET_CAPS),
+        "superset_caps": list(superset_caps),
         "superset_n_nodes": len(super_paths),
+        "budgets": budgets,
+        "tolerance": tolerance,
+        "n_candidates": len(candidates_metadata),
         "calibration_steps": n_steps,
         "calibration_prompts": len(prompts),
         "verification_rule": "typical",
@@ -442,6 +463,13 @@ def parse_args():
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--posterior-threshold", type=float, default=0.09)
     p.add_argument("--posterior-alpha", type=float, default=0.3)
+    p.add_argument("--superset-caps", default="12,4,2,1",
+                   help="Comma-separated max width per depth, e.g. '10,5,3,2'.")
+    p.add_argument("--budgets", default="4,8,16,32,63,128",
+                   help="Comma-separated node budget targets to test.")
+    p.add_argument("--tolerance", type=float, default=0.30,
+                   help="Per-budget tolerance window: candidates within +/- this "
+                        "fraction of each budget are scored.")
     return p.parse_args()
 
 
