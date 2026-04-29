@@ -216,11 +216,4 @@ Temporary Items
 .vscode/
 
 #logs
-logs/pareto_43925.err
-logs/pareto_43925.out
-logs/pareto_82860.err
-logs/pareto_82860.out
-logs/pareto_deep_84052.err
-logs/pareto_deep_84052.out
-logs/sanity_993436.out
-logs/sanity_993557.out
+logs/sbatch/*

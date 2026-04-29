@@ -1,15 +1,14 @@
 """
-Pareto experiment: For each (depth, budget) cell, score all monotone
-non-increasing width allocations by mean accept length, and identify the
-Pareto-optimal shape per cell.
+Pareto experiment: For each (depth, budget) cell, score all width allocations
+by mean accept length, and identify the Pareto-optimal shape per cell.
 
 Setup:
-    * Candidate shapes: all monotone non-increasing (m_1 >= ... >= m_d) with
-      m_k <= cap_k, depth d in {1, 2, 3, 4}, node count within +/-30% of
-      target budgets {4, 8, 16, 32, 63}.
-    * Scoring: log under the superset on a calibration corpus, then for each
-      candidate compute its post-hoc mean accept length under typical
-      acceptance (no extra base-model forwards).
+    * Candidate shapes: all positive integer width allocations, depth d in
+      {1, 2, 3, 4}, with node count within +/-30% of target budgets
+      {16, 32, 64}.
+    * Scoring: pack candidates into union-tree batches that fit the model
+      position limit, then compute each candidate's post-hoc mean accept
+      length under typical acceptance.
 
 Output: a JSON file with per-shape mean accept length, grouped by
 (depth, budget bin), plus the Pareto-best shape per cell.
@@ -46,28 +45,45 @@ from hydra.model.hydra_choices import mc_sim_7b_63  # noqa: E402
 
 
 def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
-    """Load ShareGPT prompts from a JSONL file (one JSON object per line).
+    """Load prompts from either a JSON array file or a JSONL file.
 
     Each conversation has a `conversations` list of {from, value} dicts. We
     build a prompt text out of the human turns up to (but not including) the
     first gpt response, ending with `ASSISTANT:` so the model continues from
-    there. This matches the format used in `hydra/log_heads.py`.
+    there. If a sample already provides `prompt_text`, use it directly.
     """
     import random
 
-    convs: List[Dict] = []
     with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            convs.append(json.loads(line))
+        first_nonspace = ""
+        for ch in f.read(64):
+            if not ch.isspace():
+                first_nonspace = ch
+                break
+        f.seek(0)
+        if first_nonspace == "[":
+            data = json.load(f)
+            convs: List[Dict] = data if isinstance(data, list) else [data]
+        else:
+            convs = []
+            for line in f:
+                line = line.strip()
+                if line:
+                    convs.append(json.loads(line))
 
     rng = random.Random(seed)
     rng.shuffle(convs)
 
     out: List[Dict] = []
     for sample in convs:
+        if sample.get("prompt_text"):
+            out.append({
+                "id": sample.get("id", ""),
+                "prompt_text": sample["prompt_text"],
+            })
+            if len(out) >= n:
+                break
+            continue
         turns = sample.get("conversations", [])
         if not turns:
             continue
@@ -93,8 +109,7 @@ def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
 
 # Tree enumeration / shape generation
 
-SUPERSET_CAPS = (12, 4, 2, 1) # default. overridden by --superset-caps
-BUDGETS = [4, 8, 16, 32, 63, 128] # default. overridden by --budgets
+BUDGETS = [16, 32, 64] # default. overridden by --budgets
 TOLERANCE = 0.30 # default. overridden by --tolerance
 
 
@@ -131,30 +146,55 @@ def enumerate_non_increasing(depth: int, max_w: int = 15) -> List[Tuple[int, ...
     return out
 
 
-def fits_in_superset(widths: Tuple[int, ...], caps: Tuple[int, ...]) -> bool:
-    return all(widths[k] <= caps[k] for k in range(len(widths)))
+def enumerate_widths_with_node_limit(depth: int, max_nodes: int) -> List[Tuple[int, ...]]:
+    """Enumerate all width tuples whose full tree has at most max_nodes nodes."""
+    out: List[Tuple[int, ...]] = []
+
+    def rec(prefix: List[int], prod: int, nodes: int):
+        if len(prefix) == depth:
+            out.append(tuple(prefix))
+            return
+        remaining_levels = depth - len(prefix) - 1
+        # Every later level has at least width 1, so reserve its minimum cost.
+        max_w = max_nodes - nodes - prod * remaining_levels
+        for w in range(1, max_w + 1):
+            next_prod = prod * w
+            next_nodes = nodes + next_prod
+            if next_nodes + next_prod * remaining_levels > max_nodes:
+                break
+            rec(prefix + [w], next_prod, next_nodes)
+
+    rec([], 1, 0)
+    return out
+
+
+def fits_in_caps(widths: Tuple[int, ...], caps: Tuple[int, ...] | None) -> bool:
+    if caps is None:
+        return True
+    return len(widths) <= len(caps) and all(widths[k] <= caps[k] for k in range(len(widths)))
 
 
 def gather_candidates(
-    superset_caps: Tuple[int, ...] = SUPERSET_CAPS,
     budgets: List[int] = BUDGETS,
     tolerance: float = TOLERANCE,
-    max_depth: int = None,
-    max_w: int = 16,
+    max_depth: int = 4,
+    caps: Tuple[int, ...] | None = None,
+    monotone_only: bool = False,
 ) -> List[Dict]:
-    """All non-increasing shapes within budget tolerances and inside the superset."""
-    if max_depth is None:
-        max_depth = len(superset_caps)
+    """All candidate shapes within budget tolerances, optionally capped."""
     out = []
     for d in range(1, max_depth + 1):
-        shapes = enumerate_non_increasing(d, max_w=max_w)
         for B in budgets:
             lo = int(B * (1 - tolerance))
             hi = int(B * (1 + tolerance))
+            if monotone_only:
+                shapes = enumerate_non_increasing(d, max_w=hi)
+            else:
+                shapes = enumerate_widths_with_node_limit(d, max_nodes=hi)
             for s in shapes:
                 if not (lo <= node_count(s) <= hi):
                     continue
-                if not fits_in_superset(s, superset_caps):
+                if not fits_in_caps(s, caps):
                     continue
                 out.append({
                     "depth": d,
@@ -166,13 +206,56 @@ def gather_candidates(
     return out
 
 
+def union_paths(candidates_metadata: List[Dict]) -> List[List[int]]:
+    paths = {
+        tuple(path)
+        for meta in candidates_metadata
+        for path in meta["paths"]
+    }
+    return [list(path) for path in sorted(paths, key=lambda x: (len(x), x))]
+
+
+def pack_candidate_batches(candidates_metadata: List[Dict], max_union_paths: int) -> List[List[int]]:
+    """Greedily pack candidates into union trees that fit the position budget."""
+    if max_union_paths <= 0:
+        raise ValueError("max_union_paths must be positive")
+
+    ordered = sorted(
+        range(len(candidates_metadata)),
+        key=lambda i: len(candidates_metadata[i]["paths"]),
+        reverse=True,
+    )
+    batches: List[List[int]] = []
+    batch_path_sets: List[set[Tuple[int, ...]]] = []
+
+    for idx in ordered:
+        cand_paths = {tuple(path) for path in candidates_metadata[idx]["paths"]}
+        if len(cand_paths) > max_union_paths:
+            raise ValueError(
+                f"candidate {idx} has {len(cand_paths)} paths, exceeding max "
+                f"union size {max_union_paths}"
+            )
+        placed = False
+        for batch_idx, path_set in enumerate(batch_path_sets):
+            if len(path_set | cand_paths) <= max_union_paths:
+                batches[batch_idx].append(idx)
+                path_set.update(cand_paths)
+                placed = True
+                break
+        if not placed:
+            batches.append([idx])
+            batch_path_sets.append(set(cand_paths))
+
+    return batches
+
+
 # ---------------------------------------------------------------------------
 # Path-position bookkeeping for the superset
 # ---------------------------------------------------------------------------
 
 def build_path_to_pos(hydra_choices: List[List[int]]) -> Dict[Tuple[int, ...], int]:
     out = {(): 0}
-    for i, p in enumerate(hydra_choices):
+    for i, p in enumerate(sorted(hydra_choices, key=lambda x: (len(x), x))):
         out[tuple(p)] = i + 1
     return out
 
@@ -248,25 +331,25 @@ def main(args):
     K = model.hydra
     print(f"Hydra heads: K={K}")
 
-    superset_caps = tuple(int(x) for x in args.superset_caps.split(","))
     budgets = [int(x) for x in args.budgets.split(",")]
     tolerance = float(args.tolerance)
-    print(f"Search space: superset_caps={superset_caps}, budgets={budgets}, tolerance={tolerance}")
-
-    super_paths = enumerate_paths(list(superset_caps))
-    super_p2p = build_path_to_pos(super_paths)
-    super_buffers = generate_hydra_buffers(super_paths, device=model.base_model.device)
-    print(f"Superset {superset_caps}: {len(super_paths)} non-root nodes")
-
-    max_position_embeddings = model.config.max_position_embeddings
-    tree_size = len(super_paths) + 1
-    print(f"Max position embeddings: {max_position_embeddings}, tree size per step: {tree_size}")
-    if tree_size + args.max_input_tokens > max_position_embeddings:
-        print(f"[warn] tree_size ({tree_size}) + max_input_tokens ({args.max_input_tokens}) "
-              f"> max_position_embeddings ({max_position_embeddings}) -- many prompts will be skipped")
+    candidate_caps = (
+        tuple(int(x) for x in args.superset_caps.split(","))
+        if args.superset_caps
+        else None
+    )
+    print(
+        f"Search space: budgets={budgets}, tolerance={tolerance}, "
+        f"max_depth={args.max_depth}, caps={candidate_caps}, "
+        f"monotone_only={args.monotone_only}"
+    )
 
     candidates_metadata = gather_candidates(
-        superset_caps=superset_caps, budgets=budgets, tolerance=tolerance,
+        budgets=budgets,
+        tolerance=tolerance,
+        max_depth=args.max_depth,
+        caps=candidate_caps,
+        monotone_only=args.monotone_only,
     )
     print(f"Candidate shapes to score: {len(candidates_metadata)}")
     by_cell: Dict[Tuple[int, int], List[int]] = {}
@@ -274,9 +357,38 @@ def main(args):
         by_cell.setdefault((m["depth"], m["budget_target"]), []).append(i)
     print(f"  spread across {len(by_cell)} (depth, budget) cells")
 
+    missing_cells = [
+        (d, B)
+        for d in range(1, args.max_depth + 1)
+        for B in budgets
+        if (d, B) not in by_cell
+    ]
+    if missing_cells:
+        print(f"[warn] no candidates for cells: {missing_cells}")
+
+    max_position_embeddings = model.config.max_position_embeddings
+    max_union_paths = max_position_embeddings - args.max_input_tokens - 1
+    if max_union_paths <= 0:
+        raise ValueError(
+            f"max_input_tokens={args.max_input_tokens} leaves no room for a tree "
+            f"under max_position_embeddings={max_position_embeddings}"
+        )
+    candidate_batches = pack_candidate_batches(candidates_metadata, max_union_paths)
+    full_union_n_nodes = len(union_paths(candidates_metadata))
+    print(
+        f"Max position embeddings: {max_position_embeddings}; "
+        f"max union paths per batch: {max_union_paths}"
+    )
+    print(
+        f"Full union would have {full_union_n_nodes} non-root nodes; "
+        f"packed into {len(candidate_batches)} scoring batches"
+    )
+
     # Per-candidate accumulators
     accept_sum = [0.0] * len(candidates_metadata)
-    n_steps = 0
+    step_count = [0] * len(candidates_metadata)
+    batch_summaries = []
+    published_default = None
 
     # KV cache
     past_kv, pkv_data, current_length_data = initialize_past_key_values(
@@ -290,94 +402,118 @@ def main(args):
     )
     print(f"Calibration prompts (ShareGPT): {len(prompts)}")
 
-    t0 = time.time()
-    n_skipped = 0
-    for p_idx, prompt in enumerate(prompts):
-        text = prompt["prompt_text"]
-        input_ids = tok(text, return_tensors="pt").input_ids.to(model.base_model.device)
-        if input_ids.shape[1] > args.max_input_tokens:
-            n_skipped += 1
-            continue
-        if input_ids.shape[1] + tree_size > max_position_embeddings:
-            n_skipped += 1
-            continue
-
-        current_length_data.zero_()
-        reset_hydra_mode(model)
-        hidden_states, base_logits = initialize_hydra(
-            input_ids, model,
-            super_buffers["hydra_attn_mask"],
-            past_kv,
-            super_buffers["proposal_cross_attn_masks"],
+    for batch_idx, candidate_indices in enumerate(candidate_batches, start=1):
+        batch_candidates = [candidates_metadata[i] for i in candidate_indices]
+        super_paths = union_paths(batch_candidates)
+        super_p2p = build_path_to_pos(super_paths)
+        super_buffers = generate_hydra_buffers(super_paths, device=model.base_model.device)
+        tree_size = len(super_paths) + 1
+        print(
+            f"\nScoring batch {batch_idx}/{len(candidate_batches)}: "
+            f"{len(candidate_indices)} candidates, tree_size={tree_size}"
         )
 
-        new_token = 0
-        for step in range(args.max_new_tokens):
+        t0 = time.time()
+        batch_steps = 0
+        n_skipped = 0
+        for p_idx, prompt in enumerate(prompts):
+            text = prompt["prompt_text"]
+            input_ids = tok(text, return_tensors="pt").input_ids.to(model.base_model.device)
+            if input_ids.shape[1] > args.max_input_tokens:
+                n_skipped += 1
+                continue
             if input_ids.shape[1] + tree_size > max_position_embeddings:
-                break
+                n_skipped += 1
+                continue
 
-            to_pass = input_ids if step == 0 else None
-            cands_tensor, tree_cands = model.hydra_head.proposal(
-                base_logits, hidden_states, super_buffers, past_kv, to_pass
-            )
-            hidden_states, logits = tree_decoding(
-                model, tree_cands, past_kv,
-                super_buffers["hydra_position_ids"], input_ids,
-                super_buffers["retrieve_indices"],
+            current_length_data.zero_()
+            reset_hydra_mode(model)
+            hidden_states, base_logits = initialize_hydra(
+                input_ids, model,
+                super_buffers["hydra_attn_mask"],
+                past_kv,
+                super_buffers["proposal_cross_attn_masks"],
             )
 
-            # Build path -> (logits, candidate_token) dicts
-            retrieve = super_buffers["retrieve_indices"].cpu().tolist()
-            pos_to_pd: Dict[int, Tuple[int, int]] = {}
-            for p_i, row in enumerate(retrieve):
-                for d_i, pos in enumerate(row):
-                    if pos < 0:
+            new_token = 0
+            for step in range(args.max_new_tokens):
+                if input_ids.shape[1] + tree_size > max_position_embeddings:
+                    break
+
+                to_pass = input_ids if step == 0 else None
+                cands_tensor, tree_cands = model.hydra_head.proposal(
+                    base_logits, hidden_states, super_buffers, past_kv, to_pass
+                )
+                hidden_states, logits = tree_decoding(
+                    model, tree_cands, past_kv,
+                    super_buffers["hydra_position_ids"], input_ids,
+                    super_buffers["retrieve_indices"],
+                )
+
+                # Build path -> (logits, candidate_token) dicts
+                retrieve = super_buffers["retrieve_indices"].cpu().tolist()
+                pos_to_pd: Dict[int, Tuple[int, int]] = {}
+                for p_i, row in enumerate(retrieve):
+                    for d_i, pos in enumerate(row):
+                        if pos < 0:
+                            continue
+                        pos_to_pd.setdefault(pos, (p_i, d_i))
+
+                verify_logits: Dict[Tuple[int, ...], torch.Tensor] = {}
+                cand_tokens: Dict[Tuple[int, ...], int] = {}
+                verify_logits[()] = logits[0, 0].detach().cpu()
+                cand_tokens[()] = int(tree_cands[0, 0].item())
+                for path in super_paths:
+                    pos = super_p2p[tuple(path)]
+                    if pos not in pos_to_pd:
                         continue
-                    pos_to_pd.setdefault(pos, (p_i, d_i))
+                    p_i, d_i = pos_to_pd[pos]
+                    verify_logits[tuple(path)] = logits[p_i, d_i].detach().cpu()
+                    cand_tokens[tuple(path)] = int(cands_tensor[p_i, d_i].item())
 
-            verify_logits: Dict[Tuple[int, ...], torch.Tensor] = {}
-            cand_tokens: Dict[Tuple[int, ...], int] = {}
-            verify_logits[()] = logits[0, 0].detach().cpu()
-            cand_tokens[()] = int(tree_cands[0, 0].item())
-            for path in super_paths:
-                pos = super_p2p[tuple(path)]
-                if pos not in pos_to_pd:
-                    continue
-                p_i, d_i = pos_to_pd[pos]
-                verify_logits[tuple(path)] = logits[p_i, d_i].detach().cpu()
-                cand_tokens[tuple(path)] = int(cands_tensor[p_i, d_i].item())
+                # Score every candidate shape in this batch.
+                step_accepts = compute_step_accepts_for_all_candidates(
+                    batch_candidates, cand_tokens, verify_logits,
+                    args.temperature, args.posterior_threshold, args.posterior_alpha,
+                )
+                for local_j, a in enumerate(step_accepts):
+                    global_j = candidate_indices[local_j]
+                    accept_sum[global_j] += a
+                    step_count[global_j] += 1
+                batch_steps += 1
 
-            # Score every candidate shape this step
-            step_accepts = compute_step_accepts_for_all_candidates(
-                candidates_metadata, cand_tokens, verify_logits,
-                args.temperature, args.posterior_threshold, args.posterior_alpha,
-            )
-            for j, a in enumerate(step_accepts):
-                accept_sum[j] += a
-            n_steps += 1
+                # Advance state under this batch's superset decision.
+                best_cand, accept_length = evaluate_posterior(
+                    logits, cands_tensor, args.temperature,
+                    args.posterior_threshold, args.posterior_alpha,
+                    super_buffers["max_accepts"],
+                )
+                input_ids, base_logits, hidden_states, new_token = update_inference_inputs(
+                    input_ids, cands_tensor, best_cand, accept_length,
+                    super_buffers["retrieve_indices"], logits, hidden_states,
+                    new_token, pkv_data, current_length_data, model.hydra_head_arch,
+                )
+                if tok.eos_token_id in input_ids[0]:
+                    break
 
-            # Advance state under the superset's own decision
-            best_cand, accept_length = evaluate_posterior(
-                logits, cands_tensor, args.temperature,
-                args.posterior_threshold, args.posterior_alpha,
-                super_buffers["max_accepts"],
-            )
-            input_ids, base_logits, hidden_states, new_token = update_inference_inputs(
-                input_ids, cands_tensor, best_cand, accept_length,
-                super_buffers["retrieve_indices"], logits, hidden_states,
-                new_token, pkv_data, current_length_data, model.hydra_head_arch,
-            )
-            if tok.eos_token_id in input_ids[0]:
-                break
+            if (p_idx + 1) % 10 == 0:
+                elapsed = time.time() - t0
+                print(f"  [{p_idx+1}/{len(prompts)}] {batch_steps} steps  "
+                      f"({batch_steps / max(elapsed, 1e-9):.1f} steps/s, "
+                      f"{n_skipped} skipped for context limit)")
 
-        if (p_idx + 1) % 10 == 0:
-            elapsed = time.time() - t0
-            print(f"[{p_idx+1}/{len(prompts)}] {n_steps} steps  "
-                  f"({n_steps / max(elapsed, 1e-9):.1f} steps/s, "
-                  f"{n_skipped} skipped for context limit)")
-
-    print(f"Done: {n_steps} total steps across {len(prompts)-n_skipped}/{len(prompts)} prompts "
-          f"({n_skipped} skipped for exceeding context limit)")
+        batch_summaries.append({
+            "batch": batch_idx,
+            "n_candidates": len(candidate_indices),
+            "tree_size": tree_size,
+            "n_steps": batch_steps,
+            "n_skipped": n_skipped,
+        })
+        print(
+            f"Batch {batch_idx} done: {batch_steps} total steps across "
+            f"{len(prompts)-n_skipped}/{len(prompts)} prompts "
+            f"({n_skipped} skipped for exceeding context limit)"
+        )
 
     #non monotonic default paper-given tree 
     if args.score_default_tree:
@@ -466,7 +602,8 @@ def main(args):
             "budget_target": meta["budget_target"],
             "widths": meta["widths"],
             "n_nodes": meta["n_nodes"],
-            "mean_accept": accept_sum[j] / max(n_steps, 1),
+            "mean_accept": accept_sum[j] / max(step_count[j], 1),
+            "n_steps": step_count[j],
         })
 
     if published_default is not None:
@@ -493,12 +630,17 @@ def main(args):
         cell_winners[key] = rs_sorted[0]
 
     out = {
-        "superset_caps": list(superset_caps),
-        "superset_n_nodes": len(super_paths),
+        "candidate_caps": list(candidate_caps) if candidate_caps is not None else None,
+        "full_union_n_nodes": full_union_n_nodes,
         "budgets": budgets,
         "tolerance": tolerance,
+        "max_depth": args.max_depth,
+        "monotone_only": args.monotone_only,
+        "n_scoring_batches": len(candidate_batches),
+        "batch_summaries": batch_summaries,
         "n_candidates": len(candidates_metadata),
-        "calibration_steps": n_steps,
+        "calibration_steps_min": min(step_count) if step_count else 0,
+        "calibration_steps_max": max(step_count) if step_count else 0,
         "calibration_prompts": len(prompts),
         "verification_rule": "typical",
         "tau": args.temperature,
@@ -540,13 +682,19 @@ def parse_args():
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--posterior-threshold", type=float, default=0.09)
     p.add_argument("--posterior-alpha", type=float, default=0.3)
-    p.add_argument("--superset-caps", default="12,4,2,1",
-                   help="Comma-separated max width per depth, e.g. '10,5,3,2'.")
-    p.add_argument("--budgets", default="4,8,16,32,63,128",
+    p.add_argument("--superset-caps", default="",
+                   help="Optional comma-separated max width per depth. Empty means "
+                        "exhaustive widths constrained only by node budget.")
+    p.add_argument("--budgets", default="16,32,64",
                    help="Comma-separated node budget targets to test.")
     p.add_argument("--tolerance", type=float, default=0.30,
                    help="Per-budget tolerance window: candidates within +/- this "
                         "fraction of each budget are scored.")
+    p.add_argument("--max-depth", type=int, default=4,
+                   help="Maximum tree depth to enumerate.")
+    p.add_argument("--monotone-only", action="store_true",
+                   help="Restrict candidates to monotone non-increasing widths "
+                        "for the old search space.")
     p.add_argument("--score-default-tree", action=argparse.BooleanOptionalAction,
                    default=True,
                    help="Run a dedicated rollout under the published mc_sim_7b_63 "

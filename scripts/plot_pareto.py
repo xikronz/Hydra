@@ -33,8 +33,8 @@ def pareto_frontier(points: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in_json", default="logs/outputs/pareto_results.json")
-    ap.add_argument("--out", default="logs/outputs/pareto_frontier.png")
+    ap.add_argument("--in_json", default="logs/outputs/pareto_deep_139598.json")
+    ap.add_argument("--out", default="logs/outputs/pareto_deep_frontier_139598.png")
     ap.add_argument("--annotate_winners", action="store_true", default=True,
                     help="Label each per-cell budget winner with its width tuple.")
     ap.add_argument("--max_label_n", type=int, default=20,

@@ -1,228 +1,438 @@
 """
-Greedy tree search for Medusa/Hydra-style speculative decoding trees,
-following the procedure described verbally in the Hydra paper (Section 4)
-and the Medusa paper.
+Greedy Hydra tree topology search.
 
-The algorithm:
-
-  T_1 = trivial 1-node tree.
-  For i = 2, 3, ..., N:
-      For every "frontier" node f (= a node whose parent is in T_{i-1}
-      but f is not in T_{i-1}):
-          Compute Δ_f = E[accept_length(T_{i-1} ∪ {f})] - E[accept_length(T_{i-1})]
-          on a calibration corpus.
-      T_i = T_{i-1} ∪ {argmax_f Δ_f}
-
-This produces a SEQUENCE of trees, where T_i has i non-root nodes and is
-approximately optimal at that size.  Both Medusa's mc_sim_7b_63 and Hydra's
-default tree are claimed to have been built this way.
-
-NEITHER MEDUSA NOR HYDRA RELEASED THIS CODE.  The trees in their public
-repos are committed outputs.  This file is a from-scratch implementation
-following the papers' descriptions.
-
-Crucial implementation detail for efficiency:  rather than re-running Hydra
-under each candidate tree (very slow), we exploit the same trick as our
-post-hoc scoring -- we run a single discovery pass under a wide superset
-tree, log the per-node verifier logits and candidate tokens, and then
-ALL accept-length expectations are computed offline by walking sub-paths.
-
-Inputs needed (collected by `discover_menu.py`'s rollout):
-    * For each step, a dict {path_tuple: candidate_token_id}
-    * For each step, a dict {path_tuple: 1-D verifier logits at that node}
-
-Outputs:
-    * tree_sequence:  [T_1, T_2, ..., T_N], each a list of paths
-    * accept_curve:   [E[accept_length(T_i)]]  for i = 0..N
+This mirrors the offline tree construction described in the Hydra paper:
+start from a one-node tree, repeatedly evaluate the next valid child that could
+be added to each expandable parent, and add the child with the best marginal
+acceptance-length improvement.  For each requested max depth, the script grows
+one greedy sequence of trees and reports the best tree whose node count falls
+inside each requested budget tolerance window.
 """
 from __future__ import annotations
+
+import argparse
 import json
 import math
+import os
+import sys
+import time
 from pathlib import Path
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple
+
 import torch
 
+DEFAULT_HYDRA_REPO = str(Path(__file__).resolve().parents[1])
+HYDRA_REPO = os.environ.get("HYDRA_REPO", DEFAULT_HYDRA_REPO)
+if HYDRA_REPO not in sys.path:
+    sys.path.insert(0, HYDRA_REPO)
 
-# ---------------------------------------------------------------------------
-# Per-step accept-length computation under typical acceptance.
-# Same logic as build_menu_trees.accept_length_under_subtree but with a
-# pre-extracted set of tree-path tuples (faster for repeated calls).
-# ---------------------------------------------------------------------------
+from hydra.model.hydra_model import HydraModel  # noqa: E402
+from hydra.model.kv_cache import initialize_past_key_values  # noqa: E402
+from hydra.model.utils import (  # noqa: E402
+    evaluate_posterior,
+    generate_hydra_buffers,
+    initialize_hydra,
+    reset_hydra_mode,
+    tree_decoding,
+    update_inference_inputs,
+)
+from scripts.pareto_experiment import (  # noqa: E402
+    build_path_to_pos,
+    compute_step_accepts_for_all_candidates,
+    load_sharegpt_prompts,
+)
 
-def _typical_threshold(parent_logits: torch.Tensor,
-                       tau: float, eps: float, alpha: float) -> Tuple[torch.Tensor, float]:
-    probs = torch.softmax(parent_logits / tau, dim=-1)
-    H = float(-(probs * torch.log(probs + 1e-9)).sum().item())
-    threshold = min(eps, alpha * math.exp(-H))
-    return probs, threshold
+
+PathTuple = Tuple[int, ...]
 
 
-def step_accept_length(
-    tree_paths: Set[Tuple[int, ...]],
-    cand_tokens: Dict[Tuple[int, ...], int],
-    verify_logits: Dict[Tuple[int, ...], torch.Tensor],
-    tau: float, eps: float, alpha: float,
-) -> int:
-    """Accept length under typical acceptance for a tree (set of paths).
-    Returns max over root-to-leaf paths in tree_paths of the longest accepted
-    prefix.
-    """
-    if not tree_paths:
-        return 0
+def sorted_paths(paths: set[PathTuple]) -> List[List[int]]:
+    return [list(path) for path in sorted(paths, key=lambda x: (len(x), x))]
 
-    # Cache parent decisions: for each (parent_path, child_token_id) we
-    # already know whether it passes the criterion.  But cheaper: cache
-    # (parent_path) -> threshold and prob, and look up by candidate_token.
-    parent_cache: Dict[Tuple[int, ...], Tuple[torch.Tensor, float]] = {}
 
-    best = 0
-    # Group paths by their endpoints so we walk each at most once.
-    for path in tree_paths:
+def node_frontier(
+    tree: set[PathTuple],
+    max_depth: int,
+    max_children_per_parent: int,
+) -> List[PathTuple]:
+    """Return the next contiguous top-k child for every expandable parent."""
+    parents = {()}
+    parents.update(path for path in tree if len(path) < max_depth)
+
+    frontier: List[PathTuple] = []
+    for parent in sorted(parents, key=lambda x: (len(x), x)):
+        if len(parent) >= max_depth:
+            continue
+        child_count = sum(
+            1
+            for path in tree
+            if len(path) == len(parent) + 1 and path[:-1] == parent
+        )
+        if child_count < max_children_per_parent:
+            frontier.append(parent + (child_count,))
+    return frontier
+
+
+def longest_current_prefix_lengths(
+    retrieve_indices: torch.Tensor,
+    path_to_pos: Dict[PathTuple, int],
+    current_tree: set[PathTuple],
+    device: torch.device,
+) -> torch.Tensor:
+    pos_to_path = {pos: path for path, pos in path_to_pos.items() if path}
+    out: List[int] = []
+    for row in retrieve_indices.cpu().tolist():
         accepted = 0
-        for k in range(len(path)):
-            parent = tuple(path[:k])
-            here = tuple(path[:k + 1])
-            if parent not in verify_logits or here not in cand_tokens:
+        for pos in row[1:]:
+            if pos <= 0:
                 break
-            cand = cand_tokens[here]
-            if parent not in parent_cache:
-                probs, thresh = _typical_threshold(verify_logits[parent], tau, eps, alpha)
-                parent_cache[parent] = (probs, thresh)
-            probs, thresh = parent_cache[parent]
-            p_cand = float(probs[cand].item())
-            if p_cand > thresh:
-                accepted += 1
-            else:
+            path = pos_to_path[pos]
+            if path not in current_tree:
                 break
-        if accepted > best:
-            best = accepted
-            if best == len(path):
-                # can't do better along this path
-                continue
-    return best
+            accepted += 1
+        out.append(accepted)
+    return torch.tensor(out, dtype=torch.long, device=device)
 
 
-# ---------------------------------------------------------------------------
-# Greedy node-addition search
-# ---------------------------------------------------------------------------
+def score_frontier_once(
+    model: HydraModel,
+    tok,
+    prompts: List[Dict],
+    current_tree: set[PathTuple],
+    frontier: List[PathTuple],
+    max_input_tokens: int,
+    max_new_tokens: int,
+    temperature: float,
+    posterior_threshold: float,
+    posterior_alpha: float,
+) -> Dict:
+    """Score current_tree and current_tree + each frontier node on one rollout."""
+    scoring_tree = set(current_tree)
+    scoring_tree.update(frontier)
+    scoring_paths = sorted_paths(scoring_tree)
+    path_to_pos = build_path_to_pos(scoring_paths)
+    buffers = generate_hydra_buffers(scoring_paths, device=model.base_model.device)
+    tree_size = len(scoring_paths) + 1
+    max_position_embeddings = model.config.max_position_embeddings
 
-def expected_accept_over_corpus(
-    tree_paths: Set[Tuple[int, ...]],
-    corpus: List[Tuple[Dict[Tuple[int, ...], int], Dict[Tuple[int, ...], torch.Tensor]]],
-    tau: float, eps: float, alpha: float,
-) -> float:
-    """Mean accept length across corpus steps."""
-    if not corpus:
-        return 0.0
-    total = 0
-    for cand_dict, logits_dict in corpus:
-        total += step_accept_length(tree_paths, cand_dict, logits_dict, tau, eps, alpha)
-    return total / len(corpus)
+    if tree_size + max_input_tokens > max_position_embeddings:
+        raise ValueError(
+            f"scoring tree_size={tree_size} leaves too little context for "
+            f"max_input_tokens={max_input_tokens}"
+        )
+
+    candidate_metadata = [{"paths": sorted_paths(current_tree)}]
+    candidate_metadata.extend(
+        {"paths": sorted_paths(current_tree | {node})}
+        for node in frontier
+    )
+    accept_sum = [0.0] * len(candidate_metadata)
+    n_steps = 0
+    n_skipped = 0
+
+    past_kv, pkv_data, current_length_data = initialize_past_key_values(
+        model.base_model, model.hydra_head_arch
+    )
+    current_max_accepts = longest_current_prefix_lengths(
+        buffers["retrieve_indices"], path_to_pos, current_tree, model.base_model.device
+    )
+
+    t0 = time.time()
+    for p_idx, prompt in enumerate(prompts):
+        text = prompt["prompt_text"]
+        input_ids = tok(text, return_tensors="pt").input_ids.to(model.base_model.device)
+        if input_ids.shape[1] > max_input_tokens:
+            n_skipped += 1
+            continue
+        if input_ids.shape[1] + tree_size > max_position_embeddings:
+            n_skipped += 1
+            continue
+
+        current_length_data.zero_()
+        reset_hydra_mode(model)
+        hidden_states, base_logits = initialize_hydra(
+            input_ids,
+            model,
+            buffers["hydra_attn_mask"],
+            past_kv,
+            buffers["proposal_cross_attn_masks"],
+        )
+
+        new_token = 0
+        for step in range(max_new_tokens):
+            if input_ids.shape[1] + tree_size > max_position_embeddings:
+                break
+
+            to_pass = input_ids if step == 0 else None
+            cands_tensor, tree_cands = model.hydra_head.proposal(
+                base_logits, hidden_states, buffers, past_kv, to_pass
+            )
+            hidden_states, logits = tree_decoding(
+                model,
+                tree_cands,
+                past_kv,
+                buffers["hydra_position_ids"],
+                input_ids,
+                buffers["retrieve_indices"],
+            )
+
+            retrieve = buffers["retrieve_indices"].cpu().tolist()
+            pos_to_pd: Dict[int, Tuple[int, int]] = {}
+            for p_i, row in enumerate(retrieve):
+                for d_i, pos in enumerate(row):
+                    if pos < 0:
+                        continue
+                    pos_to_pd.setdefault(pos, (p_i, d_i))
+
+            verify_logits: Dict[PathTuple, torch.Tensor] = {
+                (): logits[0, 0].detach().cpu()
+            }
+            cand_tokens: Dict[PathTuple, int] = {
+                (): int(tree_cands[0, 0].item())
+            }
+            for path in scoring_paths:
+                path_t = tuple(path)
+                pos = path_to_pos[path_t]
+                if pos not in pos_to_pd:
+                    continue
+                p_i, d_i = pos_to_pd[pos]
+                verify_logits[path_t] = logits[p_i, d_i].detach().cpu()
+                cand_tokens[path_t] = int(cands_tensor[p_i, d_i].item())
+
+            step_accepts = compute_step_accepts_for_all_candidates(
+                candidate_metadata,
+                cand_tokens,
+                verify_logits,
+                temperature,
+                posterior_threshold,
+                posterior_alpha,
+            )
+            for j, accept in enumerate(step_accepts):
+                accept_sum[j] += accept
+            n_steps += 1
+
+            # Advance according to the current tree, even though the scoring
+            # pass also includes one-step frontier probes.
+            best_cand, accept_length = evaluate_posterior(
+                logits,
+                cands_tensor,
+                temperature,
+                posterior_threshold,
+                posterior_alpha,
+                current_max_accepts,
+            )
+            input_ids, base_logits, hidden_states, new_token = update_inference_inputs(
+                input_ids,
+                cands_tensor,
+                best_cand,
+                accept_length,
+                buffers["retrieve_indices"],
+                logits,
+                hidden_states,
+                new_token,
+                pkv_data,
+                current_length_data,
+                model.hydra_head_arch,
+            )
+            if tok.eos_token_id in input_ids[0]:
+                break
+
+        if (p_idx + 1) % 10 == 0:
+            elapsed = time.time() - t0
+            print(
+                f"    [{p_idx + 1}/{len(prompts)}] {n_steps} steps "
+                f"({n_steps / max(elapsed, 1e-9):.1f} steps/s, "
+                f"{n_skipped} skipped)"
+            )
+
+    means = [x / max(n_steps, 1) for x in accept_sum]
+    return {
+        "tree_size": len(current_tree),
+        "scoring_tree_size": len(scoring_tree),
+        "frontier": [list(node) for node in frontier],
+        "current_mean_accept": means[0],
+        "candidate_mean_accepts": means[1:],
+        "n_steps": n_steps,
+        "n_skipped": n_skipped,
+    }
 
 
-def greedy_tree_search(
-    corpus: List[Tuple[Dict[Tuple[int, ...], int], Dict[Tuple[int, ...], torch.Tensor]]],
-    superset_paths: List[List[int]],
-    max_nodes: int = 128,
-    tau: float = 0.7,
-    eps: float = 0.09,
-    alpha: float = 0.3,
-    verbose: bool = True,
-) -> Tuple[List[List[List[int]]], List[float]]:
-    """Build T_1 ⊂ T_2 ⊂ ... ⊂ T_max_nodes by greedy node addition.
-
-    Returns:
-        tree_sequence: list of length max_nodes+1, where tree_sequence[i]
-                       is T_i as a list of paths (T_0 is the empty tree).
-        accept_curve:  list of length max_nodes+1 of E[accept_length(T_i)].
-    """
-    super_set = set(tuple(p) for p in superset_paths)
-
-    # Current tree (paths that are members)
-    cur: Set[Tuple[int, ...]] = set()
-    sequence: List[List[List[int]]] = [[]]      # T_0 = empty
-    curve: List[float] = [0.0]
-
-    def frontier(cur: Set[Tuple[int, ...]]) -> List[Tuple[int, ...]]:
-        """Nodes f ∈ superset, f ∉ cur, parent(f) ∈ cur ∪ {root}."""
-        out = []
-        for path in superset_paths:
-            t = tuple(path)
-            if t in cur:
-                continue
-            parent = t[:-1]
-            if parent == () or parent in cur:
-                out.append(t)
-        return out
-
-    cur_score = 0.0
-    for i in range(1, max_nodes + 1):
-        front = frontier(cur)
-        if not front:
-            break
-
-        best_node = None
-        best_delta = -1.0
-        best_score = cur_score
-        for node in front:
-            trial = cur | {node}
-            score = expected_accept_over_corpus(trial, corpus, tau, eps, alpha)
-            delta = score - cur_score
-            if delta > best_delta:
-                best_delta = delta
-                best_node = node
-                best_score = score
-
-        if best_node is None or best_delta <= 0:
-            if verbose:
-                print(f"[i={i}] no positive-delta node, stopping early")
-            break
-
-        cur.add(best_node)
-        cur_score = best_score
-        sequence.append([list(p) for p in cur])
-        curve.append(cur_score)
-
-        if verbose and (i <= 10 or i % 10 == 0):
-            print(f"[i={i:3d}] +{list(best_node)}  Δ={best_delta:.4f}  "
-                  f"E[accept]={cur_score:.3f}  |T|={len(cur)}")
-
-    return sequence, curve
+def choose_budget_winners(
+    history: List[Dict],
+    budgets: List[int],
+    tolerance: float,
+) -> Dict[str, Dict]:
+    winners = {}
+    for budget in budgets:
+        lo = int(budget * (1 - tolerance))
+        hi = int(budget * (1 + tolerance))
+        eligible = [
+            row for row in history
+            if lo <= row["n_nodes"] <= hi
+        ]
+        if not eligible:
+            winners[f"B{budget}"] = {
+                "budget_target": budget,
+                "error": "no greedy tree in tolerance window",
+            }
+            continue
+        winners[f"B{budget}"] = max(
+            eligible,
+            key=lambda row: (row["mean_accept"], -row["n_nodes"]),
+        )
+    return winners
 
 
-# ---------------------------------------------------------------------------
-# I/O
-# ---------------------------------------------------------------------------
+def main(args):
+    print(f"Loading Hydra: {args.hydra_checkpoint}")
+    model = HydraModel.from_pretrained(
+        args.hydra_checkpoint,
+        base_model=args.base_model,
+        torch_dtype=torch.float16,
+        device_map="cuda",
+    )
+    model.eval()
+    tok = model.get_tokenizer()
 
-def save_corpus_for_search(
-    corpus: List[Tuple[Dict[Tuple[int, ...], int], Dict[Tuple[int, ...], torch.Tensor]]],
-    path: str,
-):
-    """Save the (cand_dict, logits_dict) corpus to disk for the search step.
-    Logits are saved as fp16 to keep size manageable.
-    """
-    payload = []
-    for cand_dict, logits_dict in corpus:
-        payload.append({
-            "candidates": {','.join(map(str, k)) if k else '': v for k, v in cand_dict.items()},
-            "logits_keys": [','.join(map(str, k)) for k in logits_dict.keys()],
-        })
-    # Save logits separately as a single tensor blob
-    import pickle
-    with open(path, "wb") as f:
-        pickle.dump(payload, f)
+    budgets = [int(x) for x in args.budgets.split(",")]
+    depths = [int(x) for x in args.depths.split(",")]
+    tolerance = float(args.tolerance)
+    max_budget_nodes = int(max(budgets) * (1 + tolerance))
+
+    prompts = load_sharegpt_prompts(
+        path=args.sharegpt_path,
+        n=args.calibration_prompts,
+        seed=args.seed,
+    )
+    print(
+        f"Search: depths={depths}, budgets={budgets}, tolerance={tolerance}, "
+        f"max_nodes={max_budget_nodes}, max_children_per_parent={args.max_children_per_parent}"
+    )
+    print(f"Calibration prompts: {len(prompts)}")
+
+    all_depth_histories = {}
+    per_cell_winners = {}
+
+    for max_depth in depths:
+        print(f"\n=== Greedy search for max_depth={max_depth} ===")
+        tree: set[PathTuple] = {(0,)}
+        history: List[Dict] = []
+
+        while len(tree) <= max_budget_nodes:
+            frontier = node_frontier(
+                tree,
+                max_depth=max_depth,
+                max_children_per_parent=args.max_children_per_parent,
+            )
+            if not frontier:
+                print("  frontier exhausted")
+                break
+
+            print(
+                f"  size={len(tree)} frontier={len(frontier)} "
+                f"scoring_tree_size={len(tree | set(frontier))}"
+            )
+            scores = score_frontier_once(
+                model=model,
+                tok=tok,
+                prompts=prompts,
+                current_tree=tree,
+                frontier=frontier,
+                max_input_tokens=args.max_input_tokens,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                posterior_threshold=args.posterior_threshold,
+                posterior_alpha=args.posterior_alpha,
+            )
+
+            best_idx = max(
+                range(len(frontier)),
+                key=lambda i: (
+                    scores["candidate_mean_accepts"][i],
+                    -sum(frontier[i]),
+                    -len(frontier[i]),
+                ),
+            )
+            best_node = frontier[best_idx]
+            best_mean = scores["candidate_mean_accepts"][best_idx]
+            improvement = best_mean - scores["current_mean_accept"]
+            tree.add(best_node)
+
+            row = {
+                "depth": max_depth,
+                "n_nodes": len(tree),
+                "mean_accept": best_mean,
+                "added_node": list(best_node),
+                "improvement": improvement,
+                "tree": sorted_paths(tree),
+                "n_steps": scores["n_steps"],
+                "n_skipped": scores["n_skipped"],
+            }
+            history.append(row)
+            print(
+                f"    add {list(best_node)} -> nodes={len(tree)} "
+                f"mean_accept={best_mean:.4f} improvement={improvement:.4f}"
+            )
+
+            if len(tree) >= max_budget_nodes:
+                break
+
+        depth_key = f"d{max_depth}"
+        all_depth_histories[depth_key] = history
+        winners = choose_budget_winners(history, budgets, tolerance)
+        for budget_key, winner in winners.items():
+            per_cell_winners[f"{depth_key}_{budget_key}"] = winner
+
+    out = {
+        "method": "greedy_node_addition",
+        "budgets": budgets,
+        "depths": depths,
+        "tolerance": tolerance,
+        "max_children_per_parent": args.max_children_per_parent,
+        "calibration_prompts": len(prompts),
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
+        "posterior_threshold": args.posterior_threshold,
+        "posterior_alpha": args.posterior_alpha,
+        "per_depth_history": all_depth_histories,
+        "per_cell_winners": per_cell_winners,
+    }
+    Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out_json).write_text(json.dumps(out, indent=2))
+    print(f"\nSaved {args.out_json}")
+
+    print("\nPer-cell greedy winners:")
+    print(f"{'cell':>8s}  {'nodes':>5s}  {'mean_accept':>11s}  {'last_added':>16s}")
+    for key in sorted(per_cell_winners):
+        winner = per_cell_winners[key]
+        if "error" in winner:
+            print(f"{key:>8s}  {winner['error']}")
+            continue
+        print(
+            f"{key:>8s}  {winner['n_nodes']:>5d}  "
+            f"{winner['mean_accept']:>11.3f}  {str(winner['added_node']):>16s}"
+        )
 
 
-# Note: in practice you'd run discover_menu.py to get the corpus, then call
-# greedy_tree_search() directly on its in-memory output, OR pickle the
-# corpus to disk and reload here for offline search.  Pickling logits dicts
-# of fp16 tensors keyed by short tuples is straightforward.
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--hydra-checkpoint", default="ankner/hydra-vicuna-7b-v1.3")
+    p.add_argument("--base-model", default="lmsys/vicuna-7b-v1.3")
+    p.add_argument("--sharegpt-path", required=True)
+    p.add_argument("--out-json", default="logs/outputs/greedy_tree_search.json")
+    p.add_argument("--calibration-prompts", type=int, default=100)
+    p.add_argument("--max-new-tokens", type=int, default=256)
+    p.add_argument("--max-input-tokens", type=int, default=1400)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--posterior-threshold", type=float, default=0.09)
+    p.add_argument("--posterior-alpha", type=float, default=0.3)
+    p.add_argument("--budgets", default="16,32,64")
+    p.add_argument("--depths", default="1,2,3,4")
+    p.add_argument("--tolerance", type=float, default=0.40)
+    p.add_argument("--max-children-per-parent", type=int, default=100)
+    return p.parse_args()
 
 
 if __name__ == "__main__":
-    # The main entry point would be:
-    #   1. Run discover_menu.py to populate `corpus` in memory
-    #   2. Call greedy_tree_search(corpus, superset_paths, max_nodes=128)
-    #   3. Save the resulting tree_sequence to JSON
-    # See discover_menu.py for how the corpus is collected.
-    print(__doc__)
+    main(parse_args())
