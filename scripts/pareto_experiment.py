@@ -4,7 +4,6 @@ non-increasing width allocations by mean accept length, and identify the
 Pareto-optimal shape per cell.
 
 Setup:
-    * Discovery superset: (8, 4, 2, 2) — 232 non-root nodes.
     * Candidate shapes: all monotone non-increasing (m_1 >= ... >= m_d) with
       m_k <= cap_k, depth d in {1, 2, 3, 4}, node count within +/-30% of
       target budgets {4, 8, 16, 32, 63}.
@@ -14,15 +13,6 @@ Setup:
 
 Output: a JSON file with per-shape mean accept length, grouped by
 (depth, budget bin), plus the Pareto-best shape per cell.
-
-Usage:
-    python pareto_experiment.py \
-        --hydra-checkpoint ankner/hydra-vicuna-7b-v1.3 \
-        --base-model       lmsys/vicuna-7b-v1.3 \
-        --sharegpt-path    data/sharegpt/raw/train.json \
-        --calibration-prompts 200 \
-        --max-new-tokens   256 \
-        --out-json         logs/pareto_results.json
 """
 from __future__ import annotations
 
@@ -52,6 +42,7 @@ from hydra.model.utils import (  # noqa: E402
     update_inference_inputs,
     evaluate_posterior,
 )
+from hydra.model.hydra_choices import mc_sim_7b_63  # noqa: E402
 
 
 def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
@@ -100,13 +91,11 @@ def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # Tree enumeration / shape generation
-# ---------------------------------------------------------------------------
 
-SUPERSET_CAPS = (12, 4, 2, 1)   # default; overridden by --superset-caps
-BUDGETS = [4, 8, 16, 32, 63, 128]  # default; overridden by --budgets
-TOLERANCE = 0.30                 # default; overridden by --tolerance
+SUPERSET_CAPS = (12, 4, 2, 1) # default. overridden by --superset-caps
+BUDGETS = [4, 8, 16, 32, 63, 128] # default. overridden by --budgets
+TOLERANCE = 0.30 # default. overridden by --tolerance
 
 
 def enumerate_paths(widths: List[int]) -> List[List[int]]:
@@ -246,11 +235,6 @@ def compute_step_accepts_for_all_candidates(
         out.append(best)
     return out
 
-
-# ---------------------------------------------------------------------------
-# Main rollout under the superset, accumulating per-candidate accept-length sums
-# ---------------------------------------------------------------------------
-
 def main(args):
     print(f"Loading Hydra: {args.hydra_checkpoint}")
     model = HydraModel.from_pretrained(
@@ -264,9 +248,6 @@ def main(args):
     K = model.hydra
     print(f"Hydra heads: K={K}")
 
-    # ------------------------------------------------------------------
-    # Superset and candidate shapes
-    # ------------------------------------------------------------------
     superset_caps = tuple(int(x) for x in args.superset_caps.split(","))
     budgets = [int(x) for x in args.budgets.split(",")]
     tolerance = float(args.tolerance)
@@ -398,9 +379,86 @@ def main(args):
     print(f"Done: {n_steps} total steps across {len(prompts)-n_skipped}/{len(prompts)} prompts "
           f"({n_skipped} skipped for exceeding context limit)")
 
-    # ----------------------------------------------------------------
-    # Compile per-cell results & Pareto picks
-    # ----------------------------------------------------------------
+    #non monotonic default paper-given tree 
+    if args.score_default_tree:
+        print(f"\nDedicated rollout for mc_sim_7b_63 (n_nodes={len(mc_sim_7b_63)})...")
+        mc_buffers = generate_hydra_buffers(mc_sim_7b_63, device=model.base_model.device)
+        mc_tree_size = len(mc_sim_7b_63) + 1
+        mc_max_depth = max(len(p) for p in mc_sim_7b_63)
+        print(f"  tree_size={mc_tree_size}, max_depth={mc_max_depth}")
+
+        mc_accept_sum = 0.0
+        mc_n_steps = 0
+        mc_n_skipped = 0
+        t1 = time.time()
+        for p_idx, prompt in enumerate(prompts):
+            text = prompt["prompt_text"]
+            input_ids = tok(text, return_tensors="pt").input_ids.to(model.base_model.device)
+            if input_ids.shape[1] > args.max_input_tokens:
+                mc_n_skipped += 1
+                continue
+            if input_ids.shape[1] + mc_tree_size > max_position_embeddings:
+                mc_n_skipped += 1
+                continue
+
+            current_length_data.zero_()
+            reset_hydra_mode(model)
+            hidden_states, base_logits = initialize_hydra(
+                input_ids, model,
+                mc_buffers["hydra_attn_mask"],
+                past_kv,
+                mc_buffers["proposal_cross_attn_masks"],
+            )
+
+            new_token = 0
+            for step in range(args.max_new_tokens):
+                if input_ids.shape[1] + mc_tree_size > max_position_embeddings:
+                    break
+                to_pass = input_ids if step == 0 else None
+                cands_tensor, tree_cands = model.hydra_head.proposal(
+                    base_logits, hidden_states, mc_buffers, past_kv, to_pass
+                )
+                hidden_states, logits = tree_decoding(
+                    model, tree_cands, past_kv,
+                    mc_buffers["hydra_position_ids"], input_ids,
+                    mc_buffers["retrieve_indices"],
+                )
+                best_cand, accept_length = evaluate_posterior(
+                    logits, cands_tensor, args.temperature,
+                    args.posterior_threshold, args.posterior_alpha,
+                    mc_buffers["max_accepts"],
+                )
+                mc_accept_sum += float(accept_length.item())
+                mc_n_steps += 1
+
+                input_ids, base_logits, hidden_states, new_token = update_inference_inputs(
+                    input_ids, cands_tensor, best_cand, accept_length,
+                    mc_buffers["retrieve_indices"], logits, hidden_states,
+                    new_token, pkv_data, current_length_data, model.hydra_head_arch,
+                )
+                if tok.eos_token_id in input_ids[0]:
+                    break
+
+            if (p_idx + 1) % 50 == 0:
+                elapsed = time.time() - t1
+                print(f"  [mc_sim_7b_63 {p_idx+1}/{len(prompts)}] {mc_n_steps} steps "
+                      f"({mc_n_steps / max(elapsed, 1e-9):.1f} steps/s, "
+                      f"{mc_n_skipped} skipped)")
+
+        mc_mean_accept = mc_accept_sum / max(mc_n_steps, 1)
+        print(f"  mc_sim_7b_63: {mc_n_steps} steps, mean_accept={mc_mean_accept:.4f} "
+              f"({mc_n_skipped} prompts skipped)")
+        published_default = {
+            "name": "mc_sim_7b_63",
+            "widths": "mc_sim_7b_63",
+            "n_nodes": len(mc_sim_7b_63),
+            "depth": mc_max_depth,
+            "mean_accept": mc_mean_accept,
+            "n_steps": mc_n_steps,
+            "n_skipped": mc_n_skipped,
+            "is_published_default": True,
+        }
+
     results = []
     for j, meta in enumerate(candidates_metadata):
         results.append({
@@ -411,12 +469,24 @@ def main(args):
             "mean_accept": accept_sum[j] / max(n_steps, 1),
         })
 
+    if published_default is not None:
+        results.append({
+            "depth": published_default["depth"],
+            "budget_target": published_default["n_nodes"],
+            "widths": published_default["widths"],
+            "n_nodes": published_default["n_nodes"],
+            "mean_accept": published_default["mean_accept"],
+            "is_published_default": True,
+        })
+
     cells: Dict[str, List[Dict]] = {}
     for r in results:
+        if r.get("is_published_default"):
+            continue
         key = f"d{r['depth']}_B{r['budget_target']}"
         cells.setdefault(key, []).append(r)
 
-    # Per-cell Pareto-best (max mean_accept; tiebreak smaller n_nodes)
+    #per-cell Pareto-best (max mean_accept; tiebreak smaller n_nodes)
     cell_winners = {}
     for key, rs in cells.items():
         rs_sorted = sorted(rs, key=lambda r: (-r["mean_accept"], r["n_nodes"]))
@@ -436,18 +506,25 @@ def main(args):
         "alpha": args.posterior_alpha,
         "all_results": results,
         "per_cell_winners": cell_winners,
+        "published_default": published_default,
     }
     Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out_json).write_text(json.dumps(out, indent=2))
     print(f"\nSaved {args.out_json}")
 
-    # Pretty-print summary
+    #pretty-print summary
     print("\nPer-cell Pareto winners:")
     print(f"{'cell':>10s}  {'best widths':>14s}  {'nodes':>5s}  {'mean_accept':>11s}")
     for key in sorted(cell_winners.keys()):
         w = cell_winners[key]
         print(f"{key:>10s}  {str(w['widths']):>14s}  {w['n_nodes']:>5d}  "
               f"{w['mean_accept']:>11.3f}")
+
+    if published_default is not None:
+        print(f"\nPublished default mc_sim_7b_63: "
+              f"nodes={published_default['n_nodes']}, "
+              f"depth={published_default['depth']}, "
+              f"mean_accept={published_default['mean_accept']:.4f}")
 
 
 def parse_args():
@@ -470,6 +547,10 @@ def parse_args():
     p.add_argument("--tolerance", type=float, default=0.30,
                    help="Per-budget tolerance window: candidates within +/- this "
                         "fraction of each budget are scored.")
+    p.add_argument("--score-default-tree", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Run a dedicated rollout under the published mc_sim_7b_63 "
+                        "tree and include it as a benchmark in the results.")
     return p.parse_args()
 
 

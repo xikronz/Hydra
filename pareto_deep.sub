@@ -27,11 +27,11 @@ python scripts/pareto_experiment.py \
   --sharegpt-path       data/sharegpt/raw/train.json \
   --calibration-prompts 600 \
   --max-new-tokens      256 \
-  --max-input-tokens    1380 \
+  --max-input-tokens    1500 \
   --seed                123 \
   --temperature         0.7 \
   --posterior-threshold 0.09 \
   --posterior-alpha     0.3 \
-  --budgets             8,16,24,32,48,64,96,128,160 \
+  --budgets             4,8,16,32,48,64,96,128 \
   --tolerance           0.40 \
   --out-json            logs/outputs/pareto_deep_${SLURM_JOB_ID:-local}.json

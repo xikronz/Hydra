@@ -8,12 +8,7 @@ runs gets a combined estimate.
 
 Within each input file, two shapes that share the same widths but differ in
 budget_target are kept as separate rows (the budget_target is a labeling
-convenience, not part of the shape).
-
-Usage:
-    python scripts/merge_pareto.py \
-        logs/outputs/pareto_results_*.json logs/outputs/pareto_deep_*.json \
-        logs/outputs/pareto_merged.json
+convenience, not part of the shape).  
 """
 from __future__ import annotations
 
@@ -52,15 +47,26 @@ def main():
     total_steps = 0
     total_prompts = 0
     sources = []
+    pd_weighted_sum = 0.0
+    pd_steps_total = 0
+    pd_meta = None
 
     for p in expanded:
         d = json.loads(p.read_text())
         n_steps = d.get("calibration_steps", 0)
         for r in d["all_results"]:
+            if r.get("is_published_default"):
+                continue
             k = shape_key(r)
             sum_weighted[k] += r["mean_accept"] * n_steps
             sum_steps[k] += n_steps
             n_nodes_of[k] = r["n_nodes"]
+        pd = d.get("published_default")
+        if pd is not None:
+            pd_n_steps = pd.get("n_steps", 0)
+            pd_weighted_sum += pd["mean_accept"] * pd_n_steps
+            pd_steps_total += pd_n_steps
+            pd_meta = pd
         total_steps += n_steps
         total_prompts += d.get("calibration_prompts", 0)
         sources.append({
@@ -94,13 +100,38 @@ def main():
     for key, rs in cells.items():
         cell_winners[key] = sorted(rs, key=lambda r: (-r["mean_accept"], r["n_nodes"]))[0]
 
+    published_default = None
+    if pd_meta is not None and pd_steps_total > 0:
+        published_default = {
+            "name": pd_meta.get("name", "mc_sim_7b_63"),
+            "widths": pd_meta.get("widths", "mc_sim_7b_63"),
+            "n_nodes": pd_meta["n_nodes"],
+            "depth": pd_meta["depth"],
+            "mean_accept": pd_weighted_sum / pd_steps_total,
+            "n_steps": pd_steps_total,
+            "is_published_default": True,
+        }
+        merged_results.append({
+            "depth": published_default["depth"],
+            "budget_target": published_default["n_nodes"],
+            "widths": published_default["widths"],
+            "n_nodes": published_default["n_nodes"],
+            "mean_accept": published_default["mean_accept"],
+            "support_steps": pd_steps_total,
+            "is_published_default": True,
+        })
+
     out = {
         "merged_from": sources,
         "total_calibration_steps": total_steps,
         "total_calibration_prompts": total_prompts,
         "n_unique_shapes": len(merged_results),
-        "all_results": sorted(merged_results, key=lambda r: (r["depth"], r["n_nodes"])),
+        "all_results": sorted(
+            merged_results,
+            key=lambda r: (r["depth"], r["n_nodes"]),
+        ),
         "per_cell_winners": cell_winners,
+        "published_default": published_default,
     }
 
     out_p = Path(out_path)

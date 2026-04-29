@@ -5,11 +5,6 @@ Reads `pareto_results.json` and produces:
   2. Overall Pareto frontier (best mean_accept at each node count, any depth).
   3. Per-depth Pareto frontiers (separate curve for each depth).
   4. Labels for the per-cell budget-target winners.
-
-Usage:
-    python scripts/plot_pareto.py \
-        --in_json logs/outputs/pareto_results.json \
-        --out logs/outputs/pareto_frontier.png
 """
 from __future__ import annotations
 
@@ -49,9 +44,11 @@ def main():
     data = json.loads(Path(args.in_json).read_text())
     rows = data["all_results"]
     winners = data["per_cell_winners"]
+    published_default = data.get("published_default")
 
+    swept_rows = [r for r in rows if not r.get("is_published_default")]
     by_depth: Dict[int, List[Dict]] = {}
-    for r in rows:
+    for r in swept_rows:
         by_depth.setdefault(r["depth"], []).append(r)
     depths_sorted = sorted(by_depth.keys())
 
@@ -70,13 +67,24 @@ def main():
                    edgecolor="white", linewidth=0.5,
                    label=f"depth={d} (n={len(rs)})")
 
-    all_pts = [(r["n_nodes"], r["mean_accept"]) for r in rows]
+    all_pts = [(r["n_nodes"], r["mean_accept"]) for r in swept_rows]
     front = pareto_frontier(all_pts)
     fxs, fys = zip(*front)
     ax.plot(fxs, fys, "k--", linewidth=2, label=f"Pareto frontier (n={len(front)})")
     ax.scatter(fxs, fys, color="red", s=90, marker="*",
                edgecolor="black", linewidth=0.6, zorder=5,
                label="frontier points")
+
+    if published_default is not None:
+        pd_n = published_default["n_nodes"]
+        pd_m = published_default["mean_accept"]
+        ax.scatter([pd_n], [pd_m], color="gold", s=320, marker="*",
+                   edgecolor="black", linewidth=1.4, zorder=6,
+                   label=f"mc_sim_7b_63 (published default)")
+        ax.annotate(f"mc_sim_7b_63\n{pd_n} nodes, {pd_m:.3f}",
+                    (pd_n, pd_m),
+                    xytext=(8, -12), textcoords="offset points",
+                    fontsize=9, fontweight="bold", color="darkgoldenrod")
 
     ax.set_xlabel("Number of tree nodes (compute budget)")
     ax.set_ylabel("Mean accept length per step")
@@ -104,6 +112,13 @@ def main():
         ax.scatter(ns, ms, color=depth_color[d], s=24, alpha=0.35)
         ax.plot(fxs, fys, "-o", color=depth_color[d], linewidth=2, markersize=6,
                 label=f"depth={d} frontier ({len(front_d)} pts)")
+
+    if published_default is not None:
+        pd_n = published_default["n_nodes"]
+        pd_m = published_default["mean_accept"]
+        ax.scatter([pd_n], [pd_m], color="gold", s=320, marker="*",
+                   edgecolor="black", linewidth=1.4, zorder=6,
+                   label="mc_sim_7b_63")
 
     ax.set_xlabel("Number of tree nodes (compute budget)")
     ax.set_ylabel("Mean accept length per step")
@@ -134,12 +149,18 @@ def main():
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"[ok] saved {out_path}")
 
-    print("\nGlobal Pareto frontier:")
+    print("\nGlobal Pareto frontier (sweep candidates only):")
     print(f"  {'nodes':>6s}  {'mean_accept':>11s}  {'depth':>5s}  widths")
-    rows_by_n = {(r["n_nodes"], r["mean_accept"]): r for r in rows}
+    rows_by_n = {(r["n_nodes"], r["mean_accept"]): r for r in swept_rows}
     for n, m in front:
         r = rows_by_n[(n, m)]
         print(f"  {n:>6d}  {m:>11.4f}  {r['depth']:>5d}  {r['widths']}")
+    if published_default is not None:
+        pd_n = published_default["n_nodes"]
+        pd_m = published_default["mean_accept"]
+        pd_d = published_default["depth"]
+        print(f"\nPublished default tree (separately measured):")
+        print(f"  {pd_n:>6d}  {pd_m:>11.4f}  {pd_d:>5d}  mc_sim_7b_63")
 
 
 if __name__ == "__main__":
