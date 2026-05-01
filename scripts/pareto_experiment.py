@@ -318,6 +318,89 @@ def compute_step_accepts_for_all_candidates(
         out.append(best)
     return out
 
+
+@torch.inference_mode()
+def run_base_chain_sanity_check(model: HydraModel, tok, args) -> None:
+    """Verify that base-generated greedy tokens accept as a synthetic chain."""
+    prompts = load_sharegpt_prompts(
+        path=args.sharegpt_path,
+        n=1,
+        seed=args.seed,
+    )
+    if not prompts:
+        raise ValueError("No prompts available for base-chain sanity check")
+
+    device = model.base_model.device
+    input_ids = tok(prompts[0]["prompt_text"], return_tensors="pt").input_ids.to(device)
+    if input_ids.shape[1] > args.max_input_tokens:
+        raise ValueError(
+            f"sanity prompt has {input_ids.shape[1]} tokens, exceeding "
+            f"max_input_tokens={args.max_input_tokens}"
+        )
+
+    reset_hydra_mode(model)
+    generated: List[int] = []
+    current_ids = input_ids.clone()
+    for _ in range(args.base_chain_length):
+        outputs = model.base_model(current_ids)
+        next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
+        generated.append(int(next_token.item()))
+        current_ids = torch.cat([current_ids, next_token[:, None]], dim=-1)
+
+    # Verify the whole synthetic chain in one base-model forward pass.  The
+    # parent paths use -1 to make it explicit that no Hydra head/top-k node was
+    # involved in proposing these tokens.
+    reset_hydra_mode(model)
+    verify_outputs = model.base_model(current_ids)
+    prompt_len = input_ids.shape[1]
+    verify_logits: Dict[Tuple[int, ...], torch.Tensor] = {}
+    cand_tokens: Dict[Tuple[int, ...], int] = {}
+    token_stats = []
+
+    for depth, token_id in enumerate(generated):
+        parent = tuple([-1] * depth)
+        here = tuple([-1] * (depth + 1))
+        logits = verify_outputs.logits[0, prompt_len - 1 + depth].detach().cpu()
+        verify_logits[parent] = logits
+        cand_tokens[here] = token_id
+
+        probs = torch.softmax(logits.float() / args.temperature, dim=-1)
+        entropy = float(-(probs * torch.log(probs + 1e-9)).sum().item())
+        threshold = min(args.posterior_threshold, args.posterior_alpha * math.exp(-entropy))
+        token_stats.append({
+            "depth": depth + 1,
+            "token_id": token_id,
+            "text": tok.decode([token_id]),
+            "prob": float(probs[token_id].item()),
+            "threshold": threshold,
+        })
+
+    synthetic_path = [[-1] * args.base_chain_length]
+    accept_length = compute_step_accepts_for_all_candidates(
+        [{"paths": synthetic_path}],
+        cand_tokens,
+        verify_logits,
+        args.temperature,
+        args.posterior_threshold,
+        args.posterior_alpha,
+    )[0]
+
+    print("\nBase-chain sanity check")
+    print(f"  prompt_tokens={prompt_len}")
+    print(f"  synthetic_path={synthetic_path[0]}")
+    print(f"  generated_token_ids={generated}")
+    print(f"  generated_text={tok.decode(generated)!r}")
+    for stat in token_stats:
+        print(
+            "  "
+            f"depth={stat['depth']} token_id={stat['token_id']} "
+            f"prob={stat['prob']:.6g} threshold={stat['threshold']:.6g} "
+            f"passes={stat['prob'] > stat['threshold']} text={stat['text']!r}"
+        )
+    print(f"  accept_length={accept_length}")
+    print(f"  mean_accept={float(accept_length):.1f}")
+
+
 def main(args):
     print(f"Loading Hydra: {args.hydra_checkpoint}")
     model = HydraModel.from_pretrained(
@@ -330,6 +413,10 @@ def main(args):
     tok = model.get_tokenizer()
     K = model.hydra
     print(f"Hydra heads: K={K}")
+
+    if args.base_chain_sanity_check:
+        run_base_chain_sanity_check(model, tok, args)
+        return
 
     budgets = [int(x) for x in args.budgets.split(",")]
     tolerance = float(args.tolerance)
@@ -351,6 +438,19 @@ def main(args):
         caps=candidate_caps,
         monotone_only=args.monotone_only,
     )
+    if args.single_widths:
+        widths = tuple(int(x) for x in args.single_widths.split(","))
+        if not fits_in_caps(widths, candidate_caps):
+            raise ValueError(
+                f"single widths {widths} do not fit candidate caps {candidate_caps}"
+            )
+        candidates_metadata = [{
+            "depth": len(widths),
+            "budget_target": node_count(widths),
+            "widths": list(widths),
+            "n_nodes": node_count(widths),
+            "paths": enumerate_paths(list(widths)),
+        }]
     print(f"Candidate shapes to score: {len(candidates_metadata)}")
     by_cell: Dict[Tuple[int, int], List[int]] = {}
     for i, m in enumerate(candidates_metadata):
@@ -602,7 +702,7 @@ def main(args):
             "budget_target": meta["budget_target"],
             "widths": meta["widths"],
             "n_nodes": meta["n_nodes"],
-            "mean_accept": accept_sum[j] / max(step_count[j], 1),
+            "mean_a/share/cuvl/cc2864/interpretable/Hydra/logs/outputs/pareto_frontier/single_222_current_10.json
             "n_steps": step_count[j],
         })
 
@@ -695,10 +795,18 @@ def parse_args():
     p.add_argument("--monotone-only", action="store_true",
                    help="Restrict candidates to monotone non-increasing widths "
                         "for the old search space.")
+    p.add_argument("--single-widths", default="",
+                   help="Optional comma-separated topology to score by itself, "
+                        "for example '2,2,2'.")
     p.add_argument("--score-default-tree", action=argparse.BooleanOptionalAction,
                    default=True,
                    help="Run a dedicated rollout under the published mc_sim_7b_63 "
                         "tree and include it as a benchmark in the results.")
+    p.add_argument("--base-chain-sanity-check", action="store_true",
+                   help="Generate a greedy base-model chain and verify that the "
+                        "Pareto acceptance scorer accepts all generated tokens.")
+    p.add_argument("--base-chain-length", type=int, default=4,
+                   help="Number of base-model greedy tokens to sanity-check.")
     return p.parse_args()
 
 
