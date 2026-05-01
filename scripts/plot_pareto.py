@@ -16,6 +16,16 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
+def format_intish(value) -> str:
+    """Comma-separated thousands for integers; plain str otherwise."""
+    if isinstance(value, int):
+        return f"{value:,}"
+    if isinstance(value, float) and value.is_integer():
+        return f"{int(value):,}"
+    if isinstance(value, str) and value.isdigit():
+        return f"{int(value):,}"
+    return str(value)
+
 
 def pareto_frontier(points: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
     """Given (n_nodes, mean_accept) points, return the upper-left Pareto frontier
@@ -33,8 +43,8 @@ def pareto_frontier(points: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in_json", default="logs/outputs/pareto_deep_139598.json")
-    ap.add_argument("--out", default="logs/outputs/pareto_deep_frontier_139598.png")
+    ap.add_argument("--in_json", default="logs/outputs/pareto_deep_154194.json")
+    ap.add_argument("--out", default="logs/outputs/pareto_deep_frontier.png")
     ap.add_argument("--annotate_winners", action="store_true", default=True,
                     help="Label each per-cell budget winner with its width tuple.")
     ap.add_argument("--max_label_n", type=int, default=20,
@@ -126,20 +136,35 @@ def main():
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(True, alpha=0.3)
 
+    def fmt(v):
+        """Format integers with commas; pass strings through."""
+        if isinstance(v, int):
+            return f"{v:,}"
+        return str(v)
+
     if "merged_from" in data:
         n_steps = data.get("total_calibration_steps", "?")
         n_prompts = data.get("total_calibration_prompts", "?")
         sources = ", ".join(str(s.get("superset_caps")) for s in data["merged_from"])
         title = (f"Hydra draft-tree Pareto analysis (MERGED)  |  supersets={sources}  |  "
-                 f"{n_steps:,} steps / {n_prompts} prompts")
+                 f"{fmt(n_steps)} steps / {fmt(n_prompts)} prompts")
     else:
-        superset = data.get("superset_caps", "?")
-        n_steps = data.get("calibration_steps", "?")
+        superset = data.get("candidate_caps")
+        if superset is None:
+            superset = data.get("superset_caps", "?")
+        n_steps = data.get("calibration_steps")
+        if n_steps is None:
+            lo = data.get("calibration_steps_min")
+            hi = data.get("calibration_steps_max")
+            if isinstance(lo, int) and isinstance(hi, int):
+                n_steps = lo if lo == hi else f"{fmt(lo)}-{fmt(hi)}"
+            else:
+                n_steps = "?"
         n_prompts = data.get("calibration_prompts", "?")
         rule = data.get("verification_rule", "?")
         tau = data.get("tau", "?")
         title = (f"Hydra draft-tree Pareto analysis  |  superset={superset}  |  "
-                 f"{n_steps:,} steps from {n_prompts} prompts  |  rule={rule}, tau={tau}")
+                 f"{fmt(n_steps)} steps from {fmt(n_prompts)} prompts  |  rule={rule}, tau={tau}")
     fig.suptitle(title, fontsize=11)
 
     fig.tight_layout(rect=[0, 0, 1, 0.96])

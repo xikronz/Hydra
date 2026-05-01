@@ -217,3 +217,10 @@ Temporary Items
 
 #logs
 logs/sbatch/*
+
+scripts/old_pareto.py
+scripts/slurm/*
+logs/outputs/entropy/*
+logs/outputs/entropy/sharegpt.csv
+logs/outputs/pareto_frontier/t.json
+logs/outputs/pareto_frontier/tt.json
