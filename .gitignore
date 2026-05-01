@@ -224,3 +224,6 @@ logs/outputs/entropy/*
 logs/outputs/entropy/sharegpt.csv
 logs/outputs/pareto_frontier/t.json
 logs/outputs/pareto_frontier/tt.json
+logs/outputs/pareto_frontier/deep_154194_self_rollout.json
+logs/outputs/pareto_frontier/deep_sharegpt.json
+logs/outputs/pareto_frontier/pareto_deep_gsm8k.json

@@ -31,6 +31,12 @@ HYDRA_REPO = os.environ.get("HYDRA_REPO", DEFAULT_HYDRA_REPO)
 if HYDRA_REPO not in sys.path:
     sys.path.insert(0, HYDRA_REPO)
 
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except AttributeError:
+    pass
+
 from hydra.model.hydra_model import HydraModel  # noqa: E402
 from hydra.model.kv_cache import initialize_past_key_values  # noqa: E402
 from hydra.model.utils import (  # noqa: E402
@@ -71,35 +77,50 @@ def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
                 if line:
                     convs.append(json.loads(line))
 
+    def build_prompt_text(sample) -> str:
+        # Legacy path: explicit prompt text.
+        if isinstance(sample, dict) and sample.get("prompt_text"):
+            return str(sample["prompt_text"])
+
+        # ShareGPT-style dict with `conversations`.
+        if isinstance(sample, dict):
+            turns = sample.get("conversations", [])
+        # Chat-style top-level list of {role, content} dicts.
+        elif isinstance(sample, list):
+            turns = sample
+        else:
+            turns = []
+
+        if not isinstance(turns, list) or not turns:
+            return ""
+
+        parts: List[str] = []
+        for t in turns:
+            if not isinstance(t, dict):
+                continue
+            role = t.get("from", t.get("role"))
+            content = t.get("value", t.get("content", ""))
+            if not content:
+                continue
+            if role in {"human", "user"}:
+                parts.append(f"USER: {content}")
+            elif role in {"gpt", "assistant"}:
+                break
+        if not parts:
+            return ""
+        return "\n".join(parts) + "\nASSISTANT:"
+
     rng = random.Random(seed)
     rng.shuffle(convs)
 
     out: List[Dict] = []
-    for sample in convs:
-        if sample.get("prompt_text"):
-            out.append({
-                "id": sample.get("id", ""),
-                "prompt_text": sample["prompt_text"],
-            })
-            if len(out) >= n:
-                break
+    for i, sample in enumerate(convs):
+        prompt_text = build_prompt_text(sample)
+        if not prompt_text:
             continue
-        turns = sample.get("conversations", [])
-        if not turns:
-            continue
-        parts: List[str] = []
-        for t in turns:
-            role = t.get("from")
-            content = t.get("value", "")
-            if role == "human":
-                parts.append(f"USER: {content}")
-            elif role == "gpt":
-                break
-        if not parts:
-            continue
-        prompt_text = "\n".join(parts) + "\nASSISTANT:"
+        sample_id = sample.get("id", "") if isinstance(sample, dict) else f"sample_{i}"
         out.append({
-            "id": sample.get("id", ""),
+            "id": sample_id,
             "prompt_text": prompt_text,
         })
         if len(out) >= n:
