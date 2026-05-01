@@ -319,6 +319,319 @@ def compute_step_accepts_for_all_candidates(
     return out
 
 
+def parse_depth_topk(spec: str) -> Dict[int, int]:
+    out: Dict[int, int] = {}
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        depth_s, topk_s = part.split(":", 1)
+        out[int(depth_s)] = int(topk_s)
+    return out
+
+
+def select_second_stage_candidates(source_json: str, topk_by_depth: Dict[int, int]) -> List[Dict]:
+    """Select top candidates per (depth, budget) from a packed first-stage run."""
+    data = json.loads(Path(source_json).read_text())
+    selected: List[Dict] = []
+    seen: set[Tuple[int, ...]] = set()
+
+    budgets = data.get("budgets", [])
+    rows = [r for r in data["all_results"] if not r.get("is_published_default")]
+    for depth in sorted(topk_by_depth):
+        topk = topk_by_depth[depth]
+        for budget in budgets:
+            cell_rows = [
+                r for r in rows
+                if r["depth"] == depth and r.get("budget_target") == budget
+            ]
+            cell_rows.sort(key=lambda r: (-r["mean_accept"], r["n_nodes"], r["widths"]))
+            for rank, row in enumerate(cell_rows[:topk], start=1):
+                widths = tuple(row["widths"])
+                if widths in seen:
+                    continue
+                seen.add(widths)
+                selected.append({
+                    "depth": row["depth"],
+                    "budget_target": row["budget_target"],
+                    "widths": list(widths),
+                    "n_nodes": row["n_nodes"],
+                    "paths": enumerate_paths(list(widths)),
+                    "first_stage_mean_accept": row["mean_accept"],
+                    "selection_rank": rank,
+                })
+
+    return selected
+
+
+def score_candidate_self_rollout(
+    model: HydraModel,
+    tok,
+    prompts: List[Dict],
+    meta: Dict,
+    args,
+    max_position_embeddings: int,
+) -> Dict:
+    """Score one topology by rolling out and advancing with that topology only."""
+    paths = meta["paths"]
+    buffers = generate_hydra_buffers(paths, device=model.base_model.device)
+    tree_size = len(paths) + 1
+    accept_sum = 0.0
+    n_steps = 0
+    n_skipped = 0
+    completed_prompts = 0
+
+    past_kv, pkv_data, current_length_data = initialize_past_key_values(
+        model.base_model, model.hydra_head_arch
+    )
+
+    t0 = time.time()
+    for p_idx, prompt in enumerate(prompts):
+        text = prompt["prompt_text"]
+        input_ids = tok(text, return_tensors="pt").input_ids.to(model.base_model.device)
+        if input_ids.shape[1] > args.max_input_tokens:
+            n_skipped += 1
+            continue
+        if input_ids.shape[1] + tree_size > max_position_embeddings:
+            n_skipped += 1
+            continue
+        completed_prompts += 1
+
+        current_length_data.zero_()
+        reset_hydra_mode(model)
+        hidden_states, base_logits = initialize_hydra(
+            input_ids, model,
+            buffers["hydra_attn_mask"],
+            past_kv,
+            buffers["proposal_cross_attn_masks"],
+        )
+
+        new_token = 0
+        for step in range(args.max_new_tokens):
+            if input_ids.shape[1] + tree_size > max_position_embeddings:
+                break
+            to_pass = input_ids if step == 0 else None
+            cands_tensor, tree_cands = model.hydra_head.proposal(
+                base_logits, hidden_states, buffers, past_kv, to_pass
+            )
+            hidden_states, logits = tree_decoding(
+                model, tree_cands, past_kv,
+                buffers["hydra_position_ids"], input_ids,
+                buffers["retrieve_indices"],
+            )
+            best_cand, accept_length = evaluate_posterior(
+                logits, cands_tensor, args.temperature,
+                args.posterior_threshold, args.posterior_alpha,
+                buffers["max_accepts"],
+            )
+            accept_sum += float(accept_length.item())
+            n_steps += 1
+
+            input_ids, base_logits, hidden_states, new_token = update_inference_inputs(
+                input_ids, cands_tensor, best_cand, accept_length,
+                buffers["retrieve_indices"], logits, hidden_states,
+                new_token, pkv_data, current_length_data, model.hydra_head_arch,
+            )
+            if tok.eos_token_id in input_ids[0]:
+                break
+
+        if completed_prompts % 10 == 0:
+            elapsed = time.time() - t0
+            print(
+                f"    [completed {completed_prompts}/{len(prompts)}] {n_steps} steps "
+                f"({n_steps / max(elapsed, 1e-9):.1f} steps/s, {n_skipped} skipped)"
+            )
+
+    return {
+        "depth": meta["depth"],
+        "budget_target": meta["budget_target"],
+        "widths": meta["widths"],
+        "n_nodes": meta["n_nodes"],
+        "mean_accept": accept_sum / max(n_steps, 1),
+        "n_steps": n_steps,
+        "n_skipped": n_skipped,
+        "first_stage_mean_accept": meta.get("first_stage_mean_accept"),
+        "selection_rank": meta.get("selection_rank"),
+    }
+
+
+def build_cell_winners(results: List[Dict]) -> Dict[str, Dict]:
+    cells: Dict[str, List[Dict]] = {}
+    for r in results:
+        if r.get("is_published_default"):
+            continue
+        key = f"d{r['depth']}_B{r['budget_target']}"
+        cells.setdefault(key, []).append(r)
+
+    cell_winners = {}
+    for key, rs in cells.items():
+        rs_sorted = sorted(rs, key=lambda r: (-r["mean_accept"], r["n_nodes"]))
+        cell_winners[key] = rs_sorted[0]
+    return cell_winners
+
+
+def pareto_frontier_rows(rows: List[Dict]) -> List[Dict]:
+    pts = sorted(rows, key=lambda r: (r["n_nodes"], -r["mean_accept"]))
+    out: List[Dict] = []
+    best = -1.0
+    for row in pts:
+        if row["mean_accept"] > best + 1e-9:
+            out.append(row)
+            best = row["mean_accept"]
+    return out
+
+
+def save_second_stage_plot(results: List[Dict], out_path: str, title: str) -> None:
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    by_depth: Dict[int, List[Dict]] = {}
+    for r in results:
+        by_depth.setdefault(r["depth"], []).append(r)
+    depths = sorted(by_depth)
+    colors = plt.get_cmap("viridis")(np.linspace(0.15, 0.85, len(depths)))
+    depth_color = {d: c for d, c in zip(depths, colors)}
+
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.5))
+    ax = axes[0]
+    for depth in depths:
+        rows = by_depth[depth]
+        ax.scatter(
+            [r["n_nodes"] for r in rows],
+            [r["mean_accept"] for r in rows],
+            color=depth_color[depth],
+            s=52,
+            alpha=0.75,
+            edgecolor="white",
+            linewidth=0.5,
+            label=f"depth={depth} (n={len(rows)})",
+        )
+    front = pareto_frontier_rows(results)
+    ax.plot(
+        [r["n_nodes"] for r in front],
+        [r["mean_accept"] for r in front],
+        "k--",
+        linewidth=2,
+        label=f"true Pareto frontier (n={len(front)})",
+    )
+    ax.scatter(
+        [r["n_nodes"] for r in front],
+        [r["mean_accept"] for r in front],
+        color="red",
+        s=90,
+        marker="*",
+        edgecolor="black",
+        linewidth=0.6,
+        zorder=5,
+    )
+    ax.set_xlabel("Number of tree nodes")
+    ax.set_ylabel("Mean accept length per step")
+    ax.set_title("Second-stage self-rollout candidates")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    for depth in depths:
+        rows = by_depth[depth]
+        front_d = pareto_frontier_rows(rows)
+        ax.scatter(
+            [r["n_nodes"] for r in rows],
+            [r["mean_accept"] for r in rows],
+            color=depth_color[depth],
+            s=28,
+            alpha=0.35,
+        )
+        ax.plot(
+            [r["n_nodes"] for r in front_d],
+            [r["mean_accept"] for r in front_d],
+            "-o",
+            color=depth_color[depth],
+            linewidth=2,
+            markersize=6,
+            label=f"depth={depth} frontier ({len(front_d)} pts)",
+        )
+    ax.set_xlabel("Number of tree nodes")
+    ax.set_ylabel("Mean accept length per step")
+    ax.set_title("Per-depth true Pareto frontiers")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    print(f"[ok] saved {path}")
+
+
+def run_second_stage_self_rollout(model: HydraModel, tok, args) -> None:
+    topk_by_depth = parse_depth_topk(args.second_stage_topk_by_depth)
+    candidates = select_second_stage_candidates(args.second_stage_from_json, topk_by_depth)
+    print(
+        f"Second-stage self-rollout: selected {len(candidates)} candidates "
+        f"from {args.second_stage_from_json}"
+    )
+
+    prompts = load_sharegpt_prompts(
+        path=args.sharegpt_path,
+        n=args.calibration_prompts,
+        seed=args.seed,
+    )
+    print(f"Calibration prompts (ShareGPT): {len(prompts)}")
+    max_position_embeddings = model.config.max_position_embeddings
+
+    results = []
+    for idx, meta in enumerate(candidates, start=1):
+        print(
+            f"\n[{idx}/{len(candidates)}] self-rollout widths={meta['widths']} "
+            f"depth={meta['depth']} nodes={meta['n_nodes']} "
+            f"first_stage={meta.get('first_stage_mean_accept'):.4f}"
+        )
+        result = score_candidate_self_rollout(
+            model, tok, prompts, meta, args, max_position_embeddings
+        )
+        results.append(result)
+        print(
+            f"  mean_accept={result['mean_accept']:.4f} "
+            f"steps={result['n_steps']} skipped={result['n_skipped']}"
+        )
+
+    cell_winners = build_cell_winners(results)
+    out = {
+        "method": "second_stage_self_rollout",
+        "source_json": args.second_stage_from_json,
+        "selection_topk_by_depth": topk_by_depth,
+        "calibration_prompts": len(prompts),
+        "max_new_tokens": args.max_new_tokens,
+        "max_input_tokens": args.max_input_tokens,
+        "seed": args.seed,
+        "verification_rule": "typical",
+        "tau": args.temperature,
+        "eps": args.posterior_threshold,
+        "alpha": args.posterior_alpha,
+        "n_candidates": len(results),
+        "calibration_steps_min": min((r["n_steps"] for r in results), default=0),
+        "calibration_steps_max": max((r["n_steps"] for r in results), default=0),
+        "all_results": results,
+        "per_cell_winners": cell_winners,
+        "published_default": None,
+    }
+    Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out_json).write_text(json.dumps(out, indent=2))
+    print(f"\nSaved {args.out_json}")
+
+    if args.second_stage_out_plot:
+        save_second_stage_plot(
+            results,
+            args.second_stage_out_plot,
+            (
+                "Hydra second-stage true Pareto frontier | "
+                f"{len(results)} self-rollout candidates | "
+                f"{len(prompts)} prompts"
+            ),
+        )
+
+
 @torch.inference_mode()
 def run_base_chain_sanity_check(model: HydraModel, tok, args) -> None:
     """Verify that base-generated greedy tokens accept as a synthetic chain."""
@@ -416,6 +729,9 @@ def main(args):
 
     if args.base_chain_sanity_check:
         run_base_chain_sanity_check(model, tok, args)
+        return
+    if args.second_stage_from_json:
+        run_second_stage_self_rollout(model, tok, args)
         return
 
     budgets = [int(x) for x in args.budgets.split(",")]
@@ -516,6 +832,7 @@ def main(args):
         t0 = time.time()
         batch_steps = 0
         n_skipped = 0
+        completed_prompts = 0
         for p_idx, prompt in enumerate(prompts):
             text = prompt["prompt_text"]
             input_ids = tok(text, return_tensors="pt").input_ids.to(model.base_model.device)
@@ -525,6 +842,7 @@ def main(args):
             if input_ids.shape[1] + tree_size > max_position_embeddings:
                 n_skipped += 1
                 continue
+            completed_prompts += 1
 
             current_length_data.zero_()
             reset_hydra_mode(model)
@@ -596,9 +914,9 @@ def main(args):
                 if tok.eos_token_id in input_ids[0]:
                     break
 
-            if (p_idx + 1) % 10 == 0:
+            if completed_prompts % 10 == 0:
                 elapsed = time.time() - t0
-                print(f"  [{p_idx+1}/{len(prompts)}] {batch_steps} steps  "
+                print(f"  [completed {completed_prompts}/{len(prompts)}] {batch_steps} steps  "
                       f"({batch_steps / max(elapsed, 1e-9):.1f} steps/s, "
                       f"{n_skipped} skipped for context limit)")
 
@@ -626,6 +944,7 @@ def main(args):
         mc_accept_sum = 0.0
         mc_n_steps = 0
         mc_n_skipped = 0
+        mc_completed_prompts = 0
         t1 = time.time()
         for p_idx, prompt in enumerate(prompts):
             text = prompt["prompt_text"]
@@ -636,6 +955,7 @@ def main(args):
             if input_ids.shape[1] + mc_tree_size > max_position_embeddings:
                 mc_n_skipped += 1
                 continue
+            mc_completed_prompts += 1
 
             current_length_data.zero_()
             reset_hydra_mode(model)
@@ -675,9 +995,9 @@ def main(args):
                 if tok.eos_token_id in input_ids[0]:
                     break
 
-            if (p_idx + 1) % 50 == 0:
+            if mc_completed_prompts % 10 == 0:
                 elapsed = time.time() - t1
-                print(f"  [mc_sim_7b_63 {p_idx+1}/{len(prompts)}] {mc_n_steps} steps "
+                print(f"  [mc_sim_7b_63 completed {mc_completed_prompts}/{len(prompts)}] {mc_n_steps} steps "
                       f"({mc_n_steps / max(elapsed, 1e-9):.1f} steps/s, "
                       f"{mc_n_skipped} skipped)")
 
@@ -702,7 +1022,7 @@ def main(args):
             "budget_target": meta["budget_target"],
             "widths": meta["widths"],
             "n_nodes": meta["n_nodes"],
-            "mean_a/share/cuvl/cc2864/interpretable/Hydra/logs/outputs/pareto_frontier/single_222_current_10.json
+            "mean_accept": accept_sum[j] / max(step_count[j], 1),
             "n_steps": step_count[j],
         })
 
@@ -798,6 +1118,14 @@ def parse_args():
     p.add_argument("--single-widths", default="",
                    help="Optional comma-separated topology to score by itself, "
                         "for example '2,2,2'.")
+    p.add_argument("--second-stage-from-json", default="",
+                   help="First-stage packed Pareto JSON to select candidates from "
+                        "and rerun with individual self-rollouts.")
+    p.add_argument("--second-stage-topk-by-depth", default="1:2,2:2,3:3,4:4",
+                   help="Comma-separated depth:topk-per-budget selection rule for "
+                        "second-stage self-rollout.")
+    p.add_argument("--second-stage-out-plot", default="",
+                   help="Optional path for the second-stage true Pareto plot.")
     p.add_argument("--score-default-tree", action=argparse.BooleanOptionalAction,
                    default=True,
                    help="Run a dedicated rollout under the published mc_sim_7b_63 "
