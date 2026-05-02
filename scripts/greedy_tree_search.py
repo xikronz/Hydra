@@ -39,7 +39,7 @@ from hydra.model.utils import (  # noqa: E402
 from scripts.pareto_experiment import (  # noqa: E402
     build_path_to_pos,
     compute_step_accepts_for_all_candidates,
-    load_sharegpt_prompts,
+    load_sharegpt_prompts as load_calibration_prompts,
 )
 
 
@@ -299,7 +299,7 @@ def main(args):
     tolerance = float(args.tolerance)
     max_budget_nodes = int(max(budgets) * (1 + tolerance))
 
-    prompts = load_sharegpt_prompts(
+    prompts = load_calibration_prompts(
         path=args.sharegpt_path,
         n=args.calibration_prompts,
         seed=args.seed,
@@ -308,6 +308,7 @@ def main(args):
         f"Search: depths={depths}, budgets={budgets}, tolerance={tolerance}, "
         f"max_nodes={max_budget_nodes}, max_children_per_parent={args.max_children_per_parent}"
     )
+    print(f"Calibration prompt file: {args.sharegpt_path}")
     print(f"Calibration prompts: {len(prompts)}")
 
     all_depth_histories = {}
@@ -418,7 +419,16 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--hydra-checkpoint", default="ankner/hydra-vicuna-7b-v1.3")
     p.add_argument("--base-model", default="lmsys/vicuna-7b-v1.3")
-    p.add_argument("--sharegpt-path", required=True)
+    p.add_argument(
+        "--sharegpt-path",
+        "--data-path",
+        dest="sharegpt_path",
+        required=True,
+        help=(
+            "JSON/JSONL calibration prompt file. Supports ShareGPT plus "
+            "ARC, LitBench, HumanEval, and GSM8K prompt formats."
+        ),
+    )
     p.add_argument("--out-json", default="logs/outputs/greedy_tree_search.json")
     p.add_argument("--calibration-prompts", type=int, default=100)
     p.add_argument("--max-new-tokens", type=int, default=256)

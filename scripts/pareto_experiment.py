@@ -22,7 +22,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import torch
 
@@ -51,12 +51,12 @@ from hydra.model.hydra_choices import mc_sim_7b_63  # noqa: E402
 
 
 def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
-    """Load prompts from either a JSON array file or a JSONL file.
+    """Load chat prompts from JSON/JSONL calibration data.
 
-    Each conversation has a `conversations` list of {from, value} dicts. We
-    build a prompt text out of the human turns up to (but not including) the
-    first gpt response, ending with `ASSISTANT:` so the model continues from
-    there. If a sample already provides `prompt_text`, use it directly.
+    Supports ShareGPT/OpenAI-style conversations, preformatted `prompt_text`
+    rows, and the local ARC/LitBench/HumanEval/GSM8K benchmark schemas. The
+    returned text always asks the user prompt and ends at `ASSISTANT:` so the
+    model continues from the answer boundary.
     """
     import random
 
@@ -77,10 +77,111 @@ def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
                 if line:
                     convs.append(json.loads(line))
 
+    def ensure_assistant_prompt(text: str) -> str:
+        text = text.strip()
+        if not text:
+            return ""
+        if "ASSISTANT:" in text:
+            return text
+        if "USER:" in text:
+            return text + "\nASSISTANT:"
+        return f"USER: {text}\nASSISTANT:"
+
+    def choice_items(choices: Any) -> List[Tuple[str, str]]:
+        if isinstance(choices, dict) and "label" in choices and "text" in choices:
+            return [
+                (str(label), str(text))
+                for label, text in zip(choices["label"], choices["text"])
+            ]
+        if isinstance(choices, dict):
+            return [(str(label), str(text)) for label, text in choices.items()]
+        if isinstance(choices, list):
+            return [
+                (chr(ord("A") + i), str(text))
+                for i, text in enumerate(choices)
+            ]
+        return []
+
+    def build_arc_prompt(sample: Dict) -> str:
+        choices = "\n".join(
+            f"{label}. {text}"
+            for label, text in choice_items(sample.get("choices", {}))
+        )
+        instruction = (
+            "Answer the multiple-choice science question.\n\n"
+            f"Question: {sample['question']}\n\n"
+            f"Choices:\n{choices}\n\n"
+            "Give the correct choice and a brief explanation."
+        )
+        return ensure_assistant_prompt(instruction)
+
+    def build_gsm8k_prompt(sample: Dict) -> str:
+        instruction = (
+            "Solve this grade school math problem. Show your reasoning and end "
+            "with the final answer.\n\n"
+            f"{sample['question']}"
+        )
+        return (
+            "A chat between a curious user and an artificial intelligence assistant. "
+            "The assistant gives helpful, detailed, and polite answers to the "
+            "user's questions.\n\n"
+            f"USER: {instruction}\nASSISTANT:"
+        )
+
+    def build_humaneval_prompt(sample: Dict) -> str:
+        return ensure_assistant_prompt(
+            "Complete this Python function:\n\n" + str(sample["prompt"])
+        )
+
+    def build_litbench_prompt(sample: Dict) -> str:
+        if "prompt" in sample:
+            instruction = (
+                "Continue the creative-writing prompt with an engaging story.\n\n"
+                f"Prompt: {sample['prompt']}"
+            )
+        else:
+            instruction = (
+                "This LitBench test row provides only paired story comment IDs.\n\n"
+                f"Chosen comment ID: {sample['chosen_comment_id']}\n"
+                f"Rejected comment ID: {sample['rejected_comment_id']}\n\n"
+                "Explain what information would be needed to compare the two stories."
+            )
+        return ensure_assistant_prompt(instruction)
+
     def build_prompt_text(sample) -> str:
-        # Legacy path: explicit prompt text.
+        # Explicit prompt text from materialized benchmark files.
         if isinstance(sample, dict) and sample.get("prompt_text"):
-            return str(sample["prompt_text"])
+            return ensure_assistant_prompt(str(sample["prompt_text"]))
+
+        if isinstance(sample, dict) and "question" in sample and "choices" in sample:
+            return build_arc_prompt(sample)
+
+        if (
+            isinstance(sample, dict)
+            and sample.get("source") == "gsm8k"
+            and "question" in sample
+        ):
+            return build_gsm8k_prompt(sample)
+
+        if isinstance(sample, dict) and "question" in sample and "answer" in sample:
+            return build_gsm8k_prompt(sample)
+
+        if (
+            isinstance(sample, dict)
+            and "prompt" in sample
+            and (
+                "task_id" in sample
+                or "canonical_solution" in sample
+                or "entry_point" in sample
+            )
+        ):
+            return build_humaneval_prompt(sample)
+
+        if isinstance(sample, dict) and (
+            "prompt" in sample
+            or {"chosen_comment_id", "rejected_comment_id"}.issubset(sample)
+        ):
+            return build_litbench_prompt(sample)
 
         # ShareGPT-style dict with `conversations`.
         if isinstance(sample, dict):
@@ -102,13 +203,15 @@ def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
             content = t.get("value", t.get("content", ""))
             if not content:
                 continue
-            if role in {"human", "user"}:
+            if role == "system":
+                parts.append(f"SYSTEM: {content}")
+            elif role in {"human", "user"}:
                 parts.append(f"USER: {content}")
             elif role in {"gpt", "assistant"}:
                 break
         if not parts:
             return ""
-        return "\n".join(parts) + "\nASSISTANT:"
+        return ensure_assistant_prompt("\n".join(parts))
 
     rng = random.Random(seed)
     rng.shuffle(convs)
