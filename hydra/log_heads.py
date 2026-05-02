@@ -700,7 +700,7 @@ def main():
         sample = conversations[sample_idx]
         prompt_text = sample.get("prompt_text") if isinstance(sample, dict) else None
         conversation = _extract_conversation(sample)
-        if not conversation:
+        if prompt_text is None and not conversation:
             print(f"[warn] sample {sample_idx}: empty conversation, skipping")
             skipped.append({"sample_idx": sample_idx, "reason": "empty"})
             continue
@@ -727,11 +727,14 @@ def main():
             })
             continue
 
-        try:
-            preview_role, preview_content = _normalize_turn(conversation[0])
-            preview = str(preview_content)[:120].replace("\n", " ")
-        except Exception:
-            preview = str(conversation[0])[:120]
+        if prompt_text is not None:
+            preview = prompt_text[:120].replace("\n", " ")
+        else:
+            try:
+                preview_role, preview_content = _normalize_turn(conversation[0])
+                preview = str(preview_content)[:120].replace("\n", " ")
+            except Exception:
+                preview = str(conversation[0])[:120]
 
         elapsed_min = (time.time() - t_start) / 60.0
         print(f"\n[info] === sample {sample_idx} ({k+1}/{len(sample_indices)}, "

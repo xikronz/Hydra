@@ -4,6 +4,8 @@ transformers==4.36.2
 accelerate==0.25.0
 sentencepiece
 protobuf
+datasets
+huggingface_hub
 
 # training extras
 bitsandbytes
