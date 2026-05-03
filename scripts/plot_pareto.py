@@ -43,8 +43,8 @@ def pareto_frontier(points: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in_json", default="logs/outputs/pareto_deep_humaneval.json")
-    ap.add_argument("--out", default="logs/outputs/pareto_deep_humaneval.png")
+    ap.add_argument("--in_json", default="logs/outputs/pareto_deep_litbench.json")
+    ap.add_argument("--out", default="logs/outputs/deep_litbench.png")
     ap.add_argument("--annotate_winners", action="store_true", default=True,
                     help="Label each per-cell budget winner with its width tuple.")
     ap.add_argument("--max_label_n", type=int, default=20,
@@ -52,7 +52,16 @@ def main():
     args = ap.parse_args()
 
     data = json.loads(Path(args.in_json).read_text())
-    rows = data["all_results"]
+    if "all_results" in data:
+        rows = data["all_results"]
+    elif "per_depth_history" in data:
+        rows = [
+            row
+            for history in data["per_depth_history"].values()
+            for row in history
+        ]
+    else:
+        raise KeyError("Expected all_results or per_depth_history in input JSON")
     winners = data["per_cell_winners"]
     published_default = data.get("published_default")
 
@@ -104,7 +113,8 @@ def main():
 
     if args.annotate_winners:
         for cell_key, w in winners.items():
-            label = f"{cell_key}\n{w['widths']}"
+            label_value = w.get("widths", f"added={w.get('added_node')}")
+            label = f"{cell_key}\n{label_value}"
             ax.annotate(label, (w["n_nodes"], w["mean_accept"]),
                         xytext=(4, 4), textcoords="offset points",
                         fontsize=7, alpha=0.85)
@@ -179,7 +189,10 @@ def main():
     rows_by_n = {(r["n_nodes"], r["mean_accept"]): r for r in swept_rows}
     for n, m in front:
         r = rows_by_n[(n, m)]
-        print(f"  {n:>6d}  {m:>11.4f}  {r['depth']:>5d}  {r['widths']}")
+        if 'widths' in r:
+            print(f"  {n:>6d}  {m:>11.4f}  {r['depth']:>5d}  {r['widths']}")
+        else:
+            print(f"  {n:>6d}  {m:>11.4f}  {r['depth']:>5d}")
     if published_default is not None:
         pd_n = published_default["n_nodes"]
         pd_m = published_default["mean_accept"]
