@@ -234,3 +234,7 @@ logs/outputs/pareto_frontier/deep_sharegpt.json
 logs/outputs/pareto_frontier/deep_arc.json
 logs/outputs/pareto_frontier/deep_litbench.json
 logs/outputs/pareto_frontier/greedy_sharegpt.json
+logs/outputs/pareto_frontier/greedy_alpaca.json
+logs/outputs/pareto_frontier/greedy_alpaca.png
+logs/outputs/pareto_frontier/greedy_gsm.json
+logs/outputs/pareto_frontier/greedy_humaneval.json

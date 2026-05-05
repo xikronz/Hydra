@@ -148,10 +148,38 @@ def load_sharegpt_prompts(path: str, n: int, seed: int = 42) -> List[Dict]:
             )
         return ensure_assistant_prompt(instruction)
 
+    def build_alpaca_prompt(sample: Dict) -> str:
+        instruction = str(sample.get("instruction", "")).strip()
+        input_text = str(sample.get("input", "") or "").strip()
+        if not instruction:
+            return ""
+        user_text = f"{instruction}\n\n{input_text}" if input_text else instruction
+        return (
+            "A chat between a curious user and an artificial intelligence assistant. "
+            "The assistant gives helpful, detailed, and polite answers to the "
+            "user's questions.\n\n"
+            f"USER: {user_text}\nASSISTANT:"
+        )
+
     def build_prompt_text(sample) -> str:
         # Explicit prompt text from materialized benchmark files.
         if isinstance(sample, dict) and sample.get("prompt_text"):
             return ensure_assistant_prompt(str(sample["prompt_text"]))
+
+        if (
+            isinstance(sample, dict)
+            and sample.get("source") == "tatsu-lab/alpaca"
+            and "instruction" in sample
+        ):
+            return build_alpaca_prompt(sample)
+
+        if (
+            isinstance(sample, dict)
+            and "instruction" in sample
+            and "output" in sample
+            and ("input" in sample or "text" in sample)
+        ):
+            return build_alpaca_prompt(sample)
 
         if isinstance(sample, dict) and "question" in sample and "choices" in sample:
             return build_arc_prompt(sample)

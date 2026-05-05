@@ -43,8 +43,8 @@ def pareto_frontier(points: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in_json", default="logs/outputs/pareto_deep_litbench.json")
-    ap.add_argument("--out", default="logs/outputs/deep_litbench.png")
+    ap.add_argument("--in_json", default="logs/outputs/greedy_tree_382610.json")
+    ap.add_argument("--out", default="logs/outputs/greedy_alpaca.png")
     ap.add_argument("--annotate_winners", action="store_true", default=True,
                     help="Label each per-cell budget winner with its width tuple.")
     ap.add_argument("--max_label_n", type=int, default=20,
@@ -64,6 +64,8 @@ def main():
         raise KeyError("Expected all_results or per_depth_history in input JSON")
     winners = data["per_cell_winners"]
     published_default = data.get("published_default")
+    if published_default is None:
+        published_default = next((r for r in rows if r.get("is_published_default")), None)
 
     swept_rows = [r for r in rows if not r.get("is_published_default")]
     by_depth: Dict[int, List[Dict]] = {}
