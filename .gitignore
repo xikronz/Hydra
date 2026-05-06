@@ -223,18 +223,5 @@ scripts/slurm/*
 logs/outputs/entropy/*
 logs/outputs/entropy/sharegpt.csv
 
-logs/outputs/pareto_frontier/deep_gsm8k.json
-logs/outputs/pareto_frontier/deep_humaneval.json
-logs/outputs/pareto_frontier/deep_sharegpt_self.json
-logs/outputs/pareto_frontier/results_128.json
-logs/outputs/pareto_frontier/results.json
-logs/outputs/pareto_frontier/deep_frontier.json
-logs/outputs/pareto_frontier/deep.json
-logs/outputs/pareto_frontier/deep_sharegpt.json
-logs/outputs/pareto_frontier/deep_arc.json
-logs/outputs/pareto_frontier/deep_litbench.json
-logs/outputs/pareto_frontier/greedy_sharegpt.json
-logs/outputs/pareto_frontier/greedy_alpaca.json
-logs/outputs/pareto_frontier/greedy_alpaca.png
-logs/outputs/pareto_frontier/greedy_gsm.json
-logs/outputs/pareto_frontier/greedy_humaneval.json
+logs/outputs/pareto_frontier/*.json
+logs/outputs/throughput_frontier/*.json
